@@ -9,13 +9,21 @@ from appwrite.services.databases import Databases
 from appwrite.query import Query
 from dotenv import load_dotenv
 import platform
+import pytz
+import logging
+
+# Setup logging
+logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 # Load environment variables
 load_dotenv()
 
 # Helper to get environment variable or Streamlit secret
 def get_env(key, default=None):
-    return os.getenv(key) or st.secrets.get(key, default)
+    value = os.getenv(key) or st.secrets.get(key, default)
+    logger.debug(f"Retrieved {key}: {'[set]' if value else '[not set]'}")
+    return value
 
 # Configuration from .env or secrets
 CHART_FILE = get_env('CHART_FILE', 'attendance_by_college.png')
@@ -32,7 +40,15 @@ APPWRITE_INTERNS_COLLECTION_ID = get_env('APPWRITE_INTERNS_COLLECTION_ID')
 # Validate Appwrite configuration
 if not all([APPWRITE_PROJECT_ID, APPWRITE_API_KEY, APPWRITE_DATABASE_ID, 
             APPWRITE_ATTENDANCE_COLLECTION_ID, APPWRITE_INTERNS_COLLECTION_ID]):
-    st.error("❌ Missing Appwrite configuration in .env or secrets. Check APPWRITE_* variables.")
+    missing = [k for k, v in {
+        'APPWRITE_PROJECT_ID': APPWRITE_PROJECT_ID,
+        'APPWRITE_API_KEY': APPWRITE_API_KEY,
+        'APPWRITE_DATABASE_ID': APPWRITE_DATABASE_ID,
+        'APPWRITE_ATTENDANCE_COLLECTION_ID': APPWRITE_ATTENDANCE_COLLECTION_ID,
+        'APPWRITE_INTERNS_COLLECTION_ID': APPWRITE_INTERNS_COLLECTION_ID
+    }.items() if not v]
+    logger.error(f"Missing Appwrite configuration: {', '.join(missing)}")
+    st.error(f"❌ Missing Appwrite configuration: {', '.join(missing)}")
     st.stop()
 
 # Parse admin credentials
@@ -43,6 +59,7 @@ if admin_creds_str:
         if ':' in cred:
             username, password = cred.strip().split(':', 1)
             ADMIN_CREDENTIALS[username] = password
+    logger.debug(f"Loaded {len(ADMIN_CREDENTIALS)} admin credentials")
 
 # Initialize Appwrite client
 client = Client()
@@ -50,6 +67,7 @@ client.set_endpoint(APPWRITE_ENDPOINT)
 client.set_project(APPWRITE_PROJECT_ID)
 client.set_key(APPWRITE_API_KEY)
 databases = Databases(client)
+logger.debug("Appwrite client initialized")
 
 # Session state initialization
 if 'authenticated' not in st.session_state:
@@ -59,44 +77,58 @@ if 'user_role' not in st.session_state:
 if 'username' not in st.session_state:
     st.session_state.username = ""
 
+# Timezone for IST
+IST = pytz.timezone('Asia/Kolkata')
+
 # Verify username in Appwrite interns collection
 def verify_username(username):
+    logger.debug(f"Verifying username: {username}")
     try:
         result = databases.list_documents(
             database_id=APPWRITE_DATABASE_ID,
             collection_id=APPWRITE_INTERNS_COLLECTION_ID,
             queries=[Query.equal('username', username)]
         )
+        logger.debug(f"Query result: {result['total']} documents found")
         if result['total'] > 0:
-            return result['documents'][0].get('college_name', '')
+            college_name = result['documents'][0].get('college_name', '')
+            logger.debug(f"Username {username} verified, college: {college_name}")
+            return college_name
         st.error(f"❌ Username '{username}' not found.")
+        logger.warning(f"Username {username} not found")
         return None
     except Exception as e:
-        st.error(f"Error verifying username: {e}")
+        st.error(f"Error verifying username: {str(e)}")
+        logger.error(f"Error verifying username {username}: {str(e)}", exc_info=True)
         return None
 
 # Load interns for admin view
 def load_interns():
+    logger.debug("Loading interns")
     try:
         result = databases.list_documents(
             database_id=APPWRITE_DATABASE_ID,
             collection_id=APPWRITE_INTERNS_COLLECTION_ID,
             queries=[Query.limit(1000)]
         )
+        logger.debug(f"Loaded {result['total']} interns")
         return pd.DataFrame([{
             'username': r.get('username', ''),
             'college_name': r.get('college_name', '')
         } for r in result['documents']])
     except Exception as e:
-        st.error(f"Error loading interns: {e}")
+        st.error(f"Error loading interns: {str(e)}")
+        logger.error(f"Error loading interns: {str(e)}", exc_info=True)
         return pd.DataFrame(columns=['username', 'college_name'])
 
 # Import CSV to interns collection
 def import_interns_csv(uploaded_file):
+    logger.debug("Importing interns CSV")
     try:
         df = pd.read_csv(uploaded_file)
         if 'username' not in df.columns or 'college_name' not in df.columns:
             st.error("❌ CSV must have 'username' and 'college_name' columns")
+            logger.error("Invalid CSV format: missing required columns")
             return 0
         
         existing = databases.list_documents(
@@ -105,6 +137,7 @@ def import_interns_csv(uploaded_file):
             queries=[Query.limit(1000)]
         )
         existing_usernames = {doc['username'] for doc in existing['documents']}
+        logger.debug(f"Found {len(existing_usernames)} existing usernames")
         
         success_count = 0
         for _, row in df.iterrows():
@@ -112,9 +145,11 @@ def import_interns_csv(uploaded_file):
             college_name = str(row['college_name']).strip() if pd.notna(row['college_name']) else ''
             
             if not username:
+                logger.warning(f"Skipping empty username at row {_+2}")
                 continue
                 
             if username in existing_usernames:
+                logger.debug(f"Skipping existing username: {username}")
                 continue
                 
             try:
@@ -128,22 +163,28 @@ def import_interns_csv(uploaded_file):
                     }
                 )
                 success_count += 1
+                logger.debug(f"Added intern: {username}")
             except Exception as e:
-                st.warning(f"Skipped {username}: {e}")
+                st.warning(f"Skipped {username}: {str(e)}")
+                logger.warning(f"Skipped {username}: {str(e)}")
         
+        logger.info(f"Imported {success_count} interns")
         return success_count
     except Exception as e:
-        st.error(f"Error importing CSV: {e}")
+        st.error(f"Error importing CSV: {str(e)}")
+        logger.error(f"Error importing CSV: {str(e)}", exc_info=True)
         return 0
 
 # Load attendance records from Appwrite
 def load_records():
+    logger.debug("Loading attendance records")
     try:
         result = databases.list_documents(
             database_id=APPWRITE_DATABASE_ID,
             collection_id=APPWRITE_ATTENDANCE_COLLECTION_ID,
             queries=[Query.limit(1000)]
         )
+        logger.debug(f"Loaded {result['total']} attendance records")
         records = result['documents']
         if not records:
             return pd.DataFrame(columns=[
@@ -160,10 +201,11 @@ def load_records():
             'in_ip': r.get('in_ip', ''),
             'out_ip': r.get('out_ip', ''),
             'status': r.get('status', '')
-        } for r in records])
+        } for r in result['documents']])
         return df
     except Exception as e:
-        st.error(f"Error loading records: {e}")
+        st.error(f"Error loading records: {str(e)}")
+        logger.error(f"Error loading records: {str(e)}", exc_info=True)
         return pd.DataFrame(columns=[
             'username', 'college_name', 'date', 'in_time', 'out_time',
             'total_hours', 'in_ip', 'out_ip', 'status'
@@ -171,8 +213,9 @@ def load_records():
 
 # Save attendance record to Appwrite
 def save_record(username, college_name, action):
-    today = datetime.datetime.now().strftime("%Y-%m-%d")
-    current_time = datetime.datetime.now().strftime("%H:%M:%S")
+    logger.debug(f"Saving record: username={username}, action={action}")
+    today = datetime.datetime.now(IST).strftime("%Y-%m-%d")
+    current_time = datetime.datetime.now(IST).strftime("%H:%M:%S")
     
     try:
         result = databases.list_documents(
@@ -184,6 +227,7 @@ def save_record(username, college_name, action):
             ]
         )
         existing_records = result['documents']
+        logger.debug(f"Found {len(existing_records)} existing records for {username} today")
         
         if action == "In":
             status = "In"
@@ -206,6 +250,7 @@ def save_record(username, college_name, action):
                     time_diff = (current_dt - last_in_time).total_seconds() / 60
                     if time_diff < 5:
                         st.warning(f"⚠️ Marked IN {int(time_diff)} min ago")
+                        logger.warning(f"IN blocked: marked {int(time_diff)} min ago for {username}")
                         return False
                 databases.update_document(
                     database_id=APPWRITE_DATABASE_ID,
@@ -213,6 +258,7 @@ def save_record(username, college_name, action):
                     document_id=existing_record['$id'],
                     data=data
                 )
+                logger.debug(f"Updated IN record for {username}")
             else:
                 databases.create_document(
                     database_id=APPWRITE_DATABASE_ID,
@@ -220,11 +266,13 @@ def save_record(username, college_name, action):
                     document_id='unique()',
                     data=data
                 )
+                logger.debug(f"Created IN record for {username}")
         
         elif action == "Out":
             status = "Out"
             if not existing_records or not existing_records[0].get('in_time'):
                 st.error("❌ Mark IN first")
+                logger.warning(f"OUT blocked: no IN record for {username}")
                 return False
             
             existing_record = existing_records[0]
@@ -234,6 +282,7 @@ def save_record(username, college_name, action):
                 time_diff = (current_dt - last_out_time).total_seconds() / 60
                 if time_diff < 5:
                     st.warning(f"⚠️ Marked OUT {int(time_diff)} min ago")
+                    logger.warning(f"OUT blocked: marked {int(time_diff)} min ago for {username}")
                     return False
             
             try:
@@ -242,7 +291,8 @@ def save_record(username, college_name, action):
                 total_seconds = (out_time_dt - in_time_dt).total_seconds()
                 total_hours = float(round(total_seconds / 3600, 2))
             except Exception as e:
-                st.warning(f"Error calculating hours: {e}")
+                st.warning(f"Error calculating hours: {str(e)}")
+                logger.warning(f"Error calculating hours for {username}: {str(e)}")
                 total_hours = 0.0
             
             databases.update_document(
@@ -256,13 +306,16 @@ def save_record(username, college_name, action):
                     'status': status
                 }
             )
+            logger.debug(f"Updated OUT record for {username}")
         return True
     except Exception as e:
-        st.error(f"Error saving record: {e}")
+        st.error(f"Error saving record: {str(e)}")
+        logger.error(f"Error saving record for {username}: {str(e)}", exc_info=True)
         return False
 
 # Calculate summary statistics
 def calculate_summary_stats(df):
+    logger.debug("Calculating summary stats")
     if df.empty or 'username' not in df.columns:
         return {
             'total_interns': 0,
@@ -285,11 +338,12 @@ def calculate_summary_stats(df):
         'total_hours': round(complete_records['total_hours'].sum(), 2) if not complete_records.empty else 0,
         'complete_sessions': len(complete_records)
     }
-    
+    logger.debug(f"Summary stats: {stats}")
     return stats
 
 # Generate analytics
 def generate_analytics(df):
+    logger.debug("Generating analytics")
     if df.empty or 'username' not in df.columns:
         return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
     
@@ -356,6 +410,7 @@ def generate_analytics(df):
     plt.tight_layout()
     plt.savefig(CHART_FILE, dpi=300, bbox_inches='tight')
     plt.close()
+    logger.debug(f"Saved analytics chart to {CHART_FILE}")
     
     return college_stats, status_counts, daily_trends
 
@@ -373,9 +428,11 @@ def admin_login():
                 st.session_state.authenticated = True
                 st.session_state.user_role = username
                 st.success(f'✅ Welcome, {username.title()}!')
+                logger.info(f"Admin {username} logged in")
                 st.rerun()
             else:
                 st.error('❌ Invalid credentials')
+                logger.warning(f"Failed login attempt for {username}")
 
 # Admin dashboard
 def admin_dashboard():
@@ -384,6 +441,7 @@ def admin_dashboard():
     if st.button('🚪 Logout'):
         st.session_state.authenticated = False
         st.session_state.user_role = None
+        logger.info(f"Admin {st.session_state.user_role} logged out")
         st.rerun()
     
     df = load_records()
@@ -456,7 +514,7 @@ def admin_dashboard():
                 st.download_button(
                     label='Export Records',
                     data=csv,
-                    file_name=f"Attendance_{datetime.datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+                    file_name=f"Attendance_{datetime.datetime.now(IST).strftime('%Y%m%d_%H%M')}.csv",
                     mime='text/csv'
                 )
         
@@ -466,7 +524,7 @@ def admin_dashboard():
                 st.download_button(
                     label='Export College Stats',
                     data=csv,
-                    file_name=f"College_Stats_{datetime.datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+                    file_name=f"College_Stats_{datetime.datetime.now(IST).strftime('%Y%m%d_%H%M')}.csv",
                     mime='text/csv'
                 )
     
@@ -495,9 +553,11 @@ def admin_dashboard():
                             }
                         )
                         st.success(f"✅ Added {new_username}")
+                        logger.info(f"Added intern: {new_username}")
                         st.rerun()
                     except Exception as e:
-                        st.error(f"Error adding intern: {e}")
+                        st.error(f"Error adding intern: {str(e)}")
+                        logger.error(f"Error adding intern {new_username}: {str(e)}")
         
         with col2:
             st.markdown('#### Delete Intern')
@@ -520,11 +580,14 @@ def admin_dashboard():
                                 document_id=document_id
                             )
                             st.success(f"✅ Deleted {delete_username}")
+                            logger.info(f"Deleted intern: {delete_username}")
                             st.rerun()
                         else:
                             st.error(f"Intern {delete_username} not found")
+                            logger.warning(f"Intern {delete_username} not found")
                     except Exception as e:
-                        st.error(f"Error deleting intern: {e}")
+                        st.error(f"Error deleting intern: {str(e)}")
+                        logger.error(f"Error deleting intern {delete_username}: {str(e)}")
         
         with col3:
             st.markdown('#### Upload Interns CSV')
@@ -536,9 +599,11 @@ def admin_dashboard():
                     count = import_interns_csv(uploaded_file)
                     if count > 0:
                         st.success(f"✅ Imported {count} interns")
+                        logger.info(f"Imported {count} interns via CSV")
                         st.rerun()
                     elif count == 0:
                         st.warning("No new interns imported")
+                        logger.info("No new interns imported from CSV")
 
 # Intern interface
 def intern_interface():
@@ -552,6 +617,7 @@ def intern_interface():
                              placeholder='Enter your username')
     if username != st.session_state.username:
         st.session_state.username = username
+        logger.debug(f"Updated session username: {username}")
     
     col1, col2 = st.columns(2)
     with col1:
@@ -560,10 +626,12 @@ def intern_interface():
                 college_name = verify_username(username.strip())
                 if college_name is not None:
                     if save_record(username.strip(), college_name, 'In'):
-                        st.success(f"✅ Welcome {username}! Marked IN at {datetime.datetime.now().strftime('%H:%M:%S')}")
+                        st.success(f"✅ Welcome {username}! Marked IN at {datetime.datetime.now(IST).strftime('%H:%M:%S')}")
+                        logger.info(f"Marked IN: {username}")
                         st.balloons()
             else:
                 st.error('❌ Enter a username')
+                logger.warning("IN attempt with empty username")
     
     with col2:
         if st.button('🔴 MARK OUT', use_container_width=True):
@@ -571,15 +639,18 @@ def intern_interface():
                 college_name = verify_username(username.strip())
                 if college_name is not None:
                     if save_record(username.strip(), college_name, 'Out'):
-                        st.success(f"✅ Goodbye {username}! Marked OUT at {datetime.datetime.now().strftime('%H:%M:%S')}")
+                        st.success(f"✅ Goodbye {username}! Marked OUT at {datetime.datetime.now(IST).strftime('%H:%M:%S')}")
+                        logger.info(f"Marked OUT: {username}")
             else:
                 st.error('❌ Enter a username')
+                logger.warning("OUT attempt with empty username")
     
     if username.strip():
         df = load_records()
-        today = datetime.datetime.now().strftime("%Y-%m-%d")
+        today = datetime.datetime.now(IST).strftime("%Y-%m-%d")
         if df.empty:
             st.info("📝 No records for today")
+            logger.debug(f"No records for {username} today")
             return
         
         user_today = df[(df['username'] == username.strip()) & (df['date'] == today)]
@@ -598,6 +669,7 @@ def intern_interface():
             with col3:
                 hours = record['total_hours'] if record['total_hours'] else 'Incomplete'
                 st.info(f"⏰ Hours: {hours}")
+            logger.debug(f"Displayed today's status for {username}")
 
 # Main application
 def main():
@@ -607,6 +679,7 @@ def main():
             st.text(f"Admins: {len(ADMIN_CREDENTIALS)}")
             st.text(f"Debug: {'ON' if DEBUG_MODE else 'OFF'}")
             st.text(f"Appwrite: {'Connected' if APPWRITE_PROJECT_ID else 'Not set'}")
+            st.text(f"Timezone: IST (Asia/Kolkata)")
     
     st.sidebar.title('🏢 Summer of AI')
     
@@ -622,6 +695,7 @@ def main():
         admin_dashboard()
 
 if __name__ == '__main__':
+    logger.debug("Starting application")
     if platform.system() == 'Emscripten':
         import asyncio
         async def async_main():
