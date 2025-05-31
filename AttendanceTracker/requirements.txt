@@ -1,0 +1,4 @@
+matplotlib
+appwrite
+numpy
+pandas
