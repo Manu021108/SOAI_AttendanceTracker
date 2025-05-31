@@ -78,7 +78,7 @@ IST = pytz.timezone('Asia/Kolkata')
 # Debug timezone
 def get_current_time_info():
     try:
-        local_time = datetime.now()
+        local_time = datetime.datetime.now()
         ist_time = datetime.now(IST)
         system_tz = time.tzname
         return {
