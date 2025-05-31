@@ -2,3 +2,4 @@ matplotlib
 appwrite
 numpy
 pandas
+seaborn
