@@ -239,14 +239,11 @@ def save_record(username, college_name, action):
             if existing_records:
                 existing_record = existing_records[0]
                 if existing_record.get('in_time'):
-                    last_in_time = datetime.strptime(existing_record['in_time'], "%H:%M:%S")
-                    current_dt = datetime.strptime(current_time, "%H:%M:%S")
-                    time_diff = (current_dt - last_in_time).total_seconds() / 60
-                    if time_diff < 5:
-                        st.warning(f"⚠️ You marked IN {int(time_diff)} minutes ago. Wait before marking again.")
-                        logger.warning(f"IN blocked: marked {int(time_diff)} min ago for {username}")
-                        return False
-                
+                    if existing_record.get('in_time'):
+                    st.warning("⚠️ You have already marked IN today.")
+                    logger.warning(f"Duplicate IN blocked for {username}")
+                    return False
+
                 databases.update_document(
                     database_id=APPWRITE_DATABASE_ID,
                     collection_id=APPWRITE_ATTENDANCE_COLLECTION_ID,
@@ -288,13 +285,10 @@ def save_record(username, college_name, action):
             
             existing_record = existing_records[0]
             if existing_record.get('out_time'):
-                last_out_time = datetime.strptime(existing_record['out_time'], "%H:%M:%S")
-                current_dt = datetime.strptime(current_time, "%H:%M:%S")
-                time_diff = (current_dt - last_out_time).total_seconds() / 60
-                if time_diff < 5:
-                    st.warning(f"⚠️ You marked OUT {int(time_diff)} minutes ago. Wait before marking again.")
-                    logger.warning(f"OUT blocked: marked {int(time_diff)} min ago for {username}")
-                    return False
+                st.warning("⚠️ You have already marked OUT today.")
+                logger.warning(f"Duplicate OUT blocked for {username}")
+                return False
+
             
             try:
                 in_time_dt = datetime.strptime(existing_record['in_time'], "%H:%M:%S")
