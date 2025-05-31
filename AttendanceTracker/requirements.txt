@@ -1,7 +1,7 @@
 # Requirements for the Attendance Tracker application
-streamlit==1.39.0
-pandas==2.2.3
-matplotlib==3.9.2
-seaborn==0.13.2
-appwrite==3.0.0
-python-dotenv==1.0.1
+streamlit
+pandas
+matplotlib
+seaborn
+appwrite
+python-dotenv
