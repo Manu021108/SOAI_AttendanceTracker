@@ -1,26 +1,27 @@
 import streamlit as st
 import pandas as pd
-import subprocess
-import platform
 import datetime
 import os
-import socket
 import matplotlib.pyplot as plt
 import seaborn as sns
 from appwrite.client import Client
 from appwrite.services.databases import Databases
 from appwrite.query import Query
 from dotenv import load_dotenv
+import platform
+import pytz
+import logging
+
+# Setup logging
+logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 # Load environment variables
 load_dotenv()
 
 # Configuration from .env file
-OFFICE_WIFI_SSIDS = os.getenv('OFFICE_WIFI_SSIDS', '').split(',') if os.getenv('OFFICE_WIFI_SSIDS') else []
-OFFICE_IP_RANGES = os.getenv('OFFICE_IP_RANGES', '').split(',') if os.getenv('OFFICE_IP_RANGES') else []
 CHART_FILE = os.getenv('CHART_FILE', 'attendance_by_college.png')
 DEBUG_MODE = os.getenv('DEBUG_MODE', 'True').lower() == 'true'
-#INTERN_CSV_PATH = os.getenv('INTERN_CSV_PATH', 'interns.csv')
 
 # Appwrite configuration
 APPWRITE_ENDPOINT = os.getenv('APPWRITE_ENDPOINT', 'https://cloud.appwrite.io/v1')
@@ -31,8 +32,17 @@ APPWRITE_INTERNS_COLLECTION_ID = os.getenv('APPWRITE_INTERNS_COLLECTION_ID')
 APPWRITE_ATTENDANCE_COLLECTION_ID = os.getenv('APPWRITE_ATTENDANCE_COLLECTION_ID')
 
 # Validate Appwrite configuration
-if not all([APPWRITE_PROJECT_ID, APPWRITE_API_KEY, APPWRITE_DATABASE_ID, APPWRITE_ATTENDANCE_COLLECTION_ID]):
-    st.error("❌ Missing Appwrite configuration in .env file. Check APPWRITE_* variables.")
+if not all([APPWRITE_PROJECT_ID, APPWRITE_API_KEY, APPWRITE_DATABASE_ID, 
+            APPWRITE_ATTENDANCE_COLLECTION_ID, APPWRITE_INTERNS_COLLECTION_ID]):
+    missing = [k for k, v in {
+        'APPWRITE_PROJECT_ID': APPWRITE_PROJECT_ID,
+        'APPWRITE_API_KEY': APPWRITE_API_KEY,
+        'APPWRITE_DATABASE_ID': APPWRITE_DATABASE_ID,
+        'APPWRITE_ATTENDANCE_COLLECTION_ID': APPWRITE_ATTENDANCE_COLLECTION_ID,
+        'APPWRITE_INTERNS_COLLECTION_ID': APPWRITE_INTERNS_COLLECTION_ID
+    }.items() if not v]
+    logger.error(f"Missing Appwrite configuration: {', '.join(missing)}")
+    st.error(f"❌ Missing Appwrite configuration: {', '.join(missing)}")
     st.stop()
 
 # Parse admin credentials
@@ -43,6 +53,7 @@ if admin_creds_str:
         if ':' in cred:
             username, password = cred.strip().split(':', 1)
             ADMIN_CREDENTIALS[username] = password
+    logger.debug(f"Loaded {len(ADMIN_CREDENTIALS)} admin credentials")
 
 # Initialize Appwrite client
 client = Client()
@@ -50,6 +61,7 @@ client.set_endpoint(APPWRITE_ENDPOINT)
 client.set_project(APPWRITE_PROJECT_ID)
 client.set_key(APPWRITE_API_KEY)
 databases = Databases(client)
+logger.debug("Appwrite client initialized")
 
 # Session state initialization
 if 'authenticated' not in st.session_state:
@@ -59,100 +71,50 @@ if 'user_role' not in st.session_state:
 if 'username' not in st.session_state:
     st.session_state.username = ""
 
-# # Load interns from CSV
-# @st.cache_data
-# def load_interns():
-#     try:
-#         df = pd.read_csv(INTERN_CSV_PATH)
-#         if 'username' not in df.columns or 'college_name' not in df.columns:
-#             st.error(f"❌ {INTERN_CSV_PATH} must contain 'username' and 'college_name' columns.")
-#             return pd.DataFrame(columns=['username', 'college_name'])
-#         return df[['username', 'college_name']]
-#     except FileNotFoundError:
-#         st.error(f"❌ {INTERN_CSV_PATH} not found. Create it with 'username' and 'college_name' columns.")
-#         return pd.DataFrame(columns=['username', 'college_name'])
-#     except Exception as e:
-#         st.error(f"Error loading {INTERN_CSV_PATH}: {e}")
-#         return pd.DataFrame(columns=['username', 'college_name'])
+# Timezone for IST
+IST = pytz.timezone('Asia/Kolkata')
 
-# Function to check Wi-Fi SSID
-def check_wifi():
-    try:
-        if platform.system() == "Emscripten":
-            if DEBUG_MODE:
-                st.info("🌐 Pyodide detected. Wi-Fi check bypassed.")
-            return True, "Pyodide"
-        elif platform.system() == "Linux":
-            current_ssid = None
-            try:
-                result = subprocess.run(['nmcli', '-t', '-f', 'ACTIVE,SSID', 'dev', 'wifi'], 
-                                       capture_output=True, text=True, check=True, timeout=30)
-                for line in result.stdout.split('\n'):
-                    if line.startswith('yes:'):
-                        current_ssid = line.split(':')[1].strip()
-                        break
-            except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
-                try:
-                    result = subprocess.run(['iwgetid', '-r'], capture_output=True, text=True, check=True, timeout=30)
-                    current_ssid = result.stdout.strip()
-                except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
-                    st.warning("⚠️ Wi-Fi detection failed. Install 'nmcli' or 'iwgetid': 'sudo apt-get install network-manager wireless-tools'.")
-                    return False, "Unknown"
-            if DEBUG_MODE:
-                st.info(f"📶 Detected Wi-Fi: {current_ssid or 'None'}")
-            return current_ssid in OFFICE_WIFI_SSIDS, current_ssid
-        elif platform.system() == "Windows":
-            result = subprocess.run(['netsh', 'wlan', 'show', 'interfaces'], 
-                                   capture_output=True, text=True, timeout=30)
-            current_ssid = None
-            for line in result.stdout.split('\n'):
-                if "SSID" in line and "BSSID" not in line:
-                    current_ssid = line.split(':')[1].strip()
-                    break
-            if DEBUG_MODE:
-                st.info(f"SSID: {current_ssid or 'None'}")
-            return current_ssid in OFFICE_WIFI_SSIDS, current_ssid
-        else:
-            st.warning(f"Wi-Fi detection not supported on {platform.system()}.")
-            return False, "Unknown"
-    except Exception as e:
-        if DEBUG_MODE:
-            st.error(f"Wi-Fi error: {e}")
-        return False, "Unknown"
-
-# Function to check IP address
-def check_ip():
-    try:
-        ip = socket.gethostbyname(socket.gethostname())
-        if DEBUG_MODE:
-            st.info(f"🌐 Detected IP: {ip}")
-        return any(ip.startswith(ip_range) for ip_range in OFFICE_IP_RANGES), ip
-    except Exception as e:
-        if DEBUG_MODE:
-            st.error(f"IP error: {e}")
-        return False, "Unknown"
+# Debug timezone
+def get_current_time_info():
+    local_time = datetime.datetime.now()
+    ist_time = datetime.datetime.now(IST)
+    system_tz = time.tzname
+    return {
+        'local_time': local_time.strftime('%Y-%m-%d %H:%M:%S %Z'),
+        'ist_time': ist_time.strftime('%Y-%m-%d %H:%M:%S %Z'),
+        'system_tz': system_tz
+    }
 
 # Verify username in Appwrite interns collection
 def verify_username(username):
+    logger.debug(f"Verifying username: {username}")
     try:
         result = databases.list_documents(
             database_id=APPWRITE_DATABASE_ID,
             collection_id=APPWRITE_INTERNS_COLLECTION_ID,
             queries=[Query.equal('username', username)]
         )
+        logger.debug(f"Query result: {result['total']} documents found")
         if result['total'] > 0:
-            return result['documents'][0].get('college_name', '')
+            college_name = result['documents'][0].get('college_name', '')
+            logger.debug(f"Username {username} verified, college: {college_name}")
+            return college_name
         st.error(f"❌ Username '{username}' not found.")
+        logger.warning(f"Username {username} not found")
         return None
     except Exception as e:
-        st.error(f"Error verifying username: {e}")
+        st.error(f"Error verifying username: {str(e)}")
+        logger.error(f"Error verifying username {username}: {str(e)}", exc_info=True)
         return None
+
 # Import CSV to interns collection
 def import_interns_csv(uploaded_file):
+    logger.debug("Importing interns CSV")
     try:
         df = pd.read_csv(uploaded_file)
         if 'username' not in df.columns or 'college_name' not in df.columns:
             st.error("❌ CSV must have 'username' and 'college_name' columns")
+            logger.error("Invalid CSV format: missing required columns")
             return 0
         
         existing = databases.list_documents(
@@ -161,6 +123,7 @@ def import_interns_csv(uploaded_file):
             queries=[Query.limit(1000)]
         )
         existing_usernames = {doc['username'] for doc in existing['documents']}
+        logger.debug(f"Found {len(existing_usernames)} existing usernames")
         
         success_count = 0
         for _, row in df.iterrows():
@@ -168,9 +131,11 @@ def import_interns_csv(uploaded_file):
             college_name = str(row['college_name']).strip() if pd.notna(row['college_name']) else ''
             
             if not username:
+                logger.warning(f"Skipping empty username at row {_+2}")
                 continue
                 
             if username in existing_usernames:
+                logger.debug(f"Skipping existing username: {username}")
                 continue
                 
             try:
@@ -184,22 +149,28 @@ def import_interns_csv(uploaded_file):
                     }
                 )
                 success_count += 1
+                logger.debug(f"Added intern: {username}")
             except Exception as e:
-                st.warning(f"Skipped {username}: {e}")
+                st.warning(f"Skipped {username}: {str(e)}")
+                logger.warning(f"Skipped {username}: {str(e)}")
         
+        logger.info(f"Imported {success_count} interns")
         return success_count
     except Exception as e:
-        st.error(f"Error importing CSV: {e}")
+        st.error(f"Error importing CSV: {str(e)}")
+        logger.error(f"Error importing CSV: {str(e)}", exc_info=True)
         return 0
-    
+
 # Load attendance records from Appwrite
 def load_records():
+    logger.debug("Loading attendance records")
     try:
         result = databases.list_documents(
             database_id=APPWRITE_DATABASE_ID,
             collection_id=APPWRITE_ATTENDANCE_COLLECTION_ID,
             queries=[Query.limit(1000)]
         )
+        logger.debug(f"Loaded {result['total']} attendance records")
         records = result['documents']
         if not records:
             if DEBUG_MODE:
@@ -214,11 +185,11 @@ def load_records():
             'date': r.get('date', ''),
             'in_time': r.get('in_time', ''),
             'out_time': r.get('out_time', ''),
-            'total_hours': r.get('total_hours', 0.0),
+            'total_hours': float(r.get('total_hours', 0.0)),
             'in_ip': r.get('in_ip', ''),
             'out_ip': r.get('out_ip', ''),
             'status': r.get('status', '')
-        } for r in records])
+        } for r in result['documents']])
         # Ensure all columns exist
         required_columns = ['username', 'college_name', 'date', 'in_time', 'out_time', 
                            'total_hours', 'in_ip', 'out_ip', 'status']
@@ -227,7 +198,8 @@ def load_records():
                 df[col] = '' if col != 'total_hours' else 0.0
         return df
     except Exception as e:
-        st.error(f"Error loading records: {e}. Check Appwrite configuration (database_id={APPWRITE_DATABASE_ID}, collection_id={APPWRITE_ATTENDANCE_COLLECTION_ID}).")
+        st.error(f"Error loading records: {str(e)}")
+        logger.error(f"Error loading records: {str(e)}", exc_info=True)
         return pd.DataFrame(columns=[
             'username', 'college_name', 'date', 'in_time', 'out_time',
             'total_hours', 'in_ip', 'out_ip', 'status'
@@ -235,13 +207,12 @@ def load_records():
 
 # Save attendance record to Appwrite
 def save_record(username, college_name, action):
-    today = datetime.datetime.now().strftime("%Y-%m-%d")
-    current_time = datetime.datetime.now().strftime("%H:%M:%S")
-    
-    try:
-        current_ip = socket.gethostbyname(socket.gethostname())
-    except:
-        current_ip = "Unknown"
+    logger.debug(f"Saving record: username={username}, action={action}")
+    time_info = get_current_time_info()
+    logger.debug(f"Timezone info: {time_info}")
+    today = datetime.datetime.now(IST).strftime("%Y-%m-%d")
+    current_time = datetime.datetime.now(IST).strftime("%H:%M:%S")
+    logger.debug(f"Recording time: {today} {current_time} IST")
     
     try:
         result = databases.list_documents(
@@ -253,6 +224,7 @@ def save_record(username, college_name, action):
             ]
         )
         existing_records = result['documents']
+        logger.debug(f"Found {len(existing_records)} existing records for {username} today")
         
         if action == "In":
             if existing_records:
@@ -263,6 +235,7 @@ def save_record(username, college_name, action):
                     time_diff = (current_dt - last_in_time).total_seconds() / 60
                     if time_diff < 5:
                         st.warning(f"⚠️ You marked IN {int(time_diff)} minutes ago. Wait before marking again.")
+                        logger.warning(f"IN blocked: marked {int(time_diff)} min ago for {username}")
                         return False
                 
                 databases.update_document(
@@ -271,13 +244,14 @@ def save_record(username, college_name, action):
                     document_id=existing_record['$id'],
                     data={
                         'in_time': current_time,
-                        'in_ip': current_ip,
+                        'in_ip': '',
                         'status': 'Checked In',
                         'out_time': '',
                         'out_ip': '',
                         'total_hours': 0.0
                     }
                 )
+                logger.debug(f"Updated IN record for {username}")
             else:
                 databases.create_document(
                     database_id=APPWRITE_DATABASE_ID,
@@ -290,15 +264,17 @@ def save_record(username, college_name, action):
                         'in_time': current_time,
                         'out_time': '',
                         'total_hours': 0.0,
-                        'in_ip': current_ip,
+                        'in_ip': '',
                         'out_ip': '',
                         'status': 'Checked In'
                     }
                 )
+                logger.debug(f"Created IN record for {username}")
         
         elif action == "Out":
             if not existing_records or not existing_records[0].get('in_time'):
                 st.error("❌ Cannot mark OUT without marking IN first today.")
+                logger.warning(f"OUT blocked: no IN record for {username}")
                 return False
             
             existing_record = existing_records[0]
@@ -308,14 +284,17 @@ def save_record(username, college_name, action):
                 time_diff = (current_dt - last_out_time).total_seconds() / 60
                 if time_diff < 5:
                     st.warning(f"⚠️ You marked OUT {int(time_diff)} minutes ago. Wait before marking again.")
+                    logger.warning(f"OUT blocked: marked {int(time_diff)} min ago for {username}")
                     return False
             
             try:
                 in_time_dt = datetime.datetime.strptime(existing_record['in_time'], "%H:%M:%S")
                 out_time_dt = datetime.datetime.strptime(current_time, "%H:%M:%S")
                 total_seconds = (out_time_dt - in_time_dt).total_seconds()
-                total_hours = round(total_seconds / 3600, 2)
-            except:
+                total_hours = float(round(total_seconds / 3600, 2))
+            except Exception as e:
+                st.warning(f"Error calculating hours: {str(e)}")
+                logger.warning(f"Error calculating hours for {username}: {str(e)}")
                 total_hours = 0.0
             
             databases.update_document(
@@ -324,18 +303,21 @@ def save_record(username, college_name, action):
                 document_id=existing_record['$id'],
                 data={
                     'out_time': current_time,
-                    'out_ip': current_ip,
+                    'out_ip': '',
                     'total_hours': total_hours,
                     'status': 'Checked Out'
                 }
             )
+            logger.debug(f"Updated OUT record for {username}")
         return True
     except Exception as e:
-        st.error(f"Error saving record: {e}. Check Appwrite configuration.")
+        st.error(f"Error saving record: {str(e)}")
+        logger.error(f"Error saving record for {username}: {str(e)}", exc_info=True)
         return False
 
 # Calculate summary statistics
 def calculate_summary_stats(df):
+    logger.debug("Calculating summary stats")
     if df.empty or 'username' not in df.columns:
         return {
             'total_interns': 0,
@@ -365,10 +347,12 @@ def calculate_summary_stats(df):
             stats['avg_hours'] = round(hours_data.mean(), 2)
             stats['total_hours'] = round(hours_data.sum(), 2)
     
+    logger.debug(f"Summary stats: {stats}")
     return stats
 
 # Generate analytics
 def generate_analytics(df):
+    logger.debug("Generating analytics")
     if df.empty or 'username' not in df.columns:
         return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
     
@@ -437,6 +421,7 @@ def generate_analytics(df):
     plt.tight_layout()
     plt.savefig(CHART_FILE, dpi=300, bbox_inches='tight')
     plt.close()
+    logger.debug(f"Saved analytics chart to {CHART_FILE}")
     
     return college_stats, status_counts, daily_trends
 
@@ -455,9 +440,11 @@ def admin_login():
                 st.session_state.authenticated = True
                 st.session_state.user_role = username
                 st.success(f'✅ Welcome, {username.title()}!')
+                logger.info(f"Admin {username} logged in")
                 st.rerun()
             else:
                 st.error('❌ Invalid credentials.')
+                logger.warning(f"Failed login attempt for {username}")
 
 # Admin dashboard
 def admin_dashboard():
@@ -466,6 +453,7 @@ def admin_dashboard():
     if st.button('🚪 Logout'):
         st.session_state.authenticated = False
         st.session_state.user_role = None
+        logger.info(f"Admin {st.session_state.user_role} logged out")
         st.rerun()
     
     st.markdown('---')
@@ -498,7 +486,7 @@ def admin_dashboard():
     if os.path.exists(CHART_FILE):
         st.image(CHART_FILE, caption='Comprehensive Attendance Analytics', use_container_width=True)
     
-    tab1, tab2, tab3, tab4 = st.tabs(['📋 All Records', '🏫 College Stats', '📊 Daily Trends', '💾 Export Data'])
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(['📋 All Records', '🏫 College Stats', '📊 Daily Trends', '💾 Export Data', '👤 Interns'])
     
     with tab1:
         st.subheader('All Attendance Records')
@@ -546,7 +534,7 @@ def admin_dashboard():
                 st.download_button(
                     label='📥 Export All Records',
                     data=csv,
-                    file_name=f"Attendance_Records_{datetime.datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+                    file_name=f"Attendance_Records_{datetime.datetime.now(IST).strftime('%Y%m%d_%H%M')}.csv",
                     mime='text/csv'
                 )
         
@@ -556,9 +544,105 @@ def admin_dashboard():
                 st.download_button(
                     label='📊 Export College Stats',
                     data=csv,
-                    file_name=f"College_Statistics_{datetime.datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+                    file_name=f"College_Statistics_{datetime.datetime.now(IST).strftime('%Y%m%d_%H%M')}.csv",
                     mime='text/csv'
                 )
+    
+    with tab5:
+        st.subheader('Manage Interns')
+        interns_df = load_interns()
+        st.dataframe(interns_df, use_container_width=True)
+        
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.markdown('#### Add Intern')
+            with st.form('add_intern_form'):
+                new_username = st.text_input('Username')
+                new_college = st.text_input('College Name')
+                add_button = st.form_submit_button('Add')
+                
+                if add_button and new_username:
+                    try:
+                        databases.create_document(
+                            database_id=APPWRITE_DATABASE_ID,
+                            collection_id=APPWRITE_INTERNS_COLLECTION_ID,
+                            document_id='unique()',
+                            data={
+                                'username': new_username,
+                                'college_name': new_college
+                            }
+                        )
+                        st.success(f"✅ Added {new_username}")
+                        logger.info(f"Added intern: {new_username}")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Error adding intern: {str(e)}")
+                        logger.error(f"Error adding intern {new_username}: {str(e)}")
+        
+        with col2:
+            st.markdown('#### Delete Intern')
+            with st.form('delete_intern_form'):
+                delete_username = st.selectbox('Username', interns_df['username'].tolist())
+                delete_button = st.form_submit_button('Delete')
+                
+                if delete_button and delete_username:
+                    try:
+                        result = databases.list_documents(
+                            database_id=APPWRITE_DATABASE_ID,
+                            collection_id=APPWRITE_INTERNS_COLLECTION_ID,
+                            queries=[Query.equal('username', delete_username)]
+                        )
+                        if result['total'] > 0:
+                            document_id = result['documents'][0]['$id']
+                            databases.delete_document(
+                                database_id=APPWRITE_DATABASE_ID,
+                                collection_id=APPWRITE_INTERNS_COLLECTION_ID,
+                                document_id=document_id
+                            )
+                            st.success(f"✅ Deleted {delete_username}")
+                            logger.info(f"Deleted intern: {delete_username}")
+                            st.rerun()
+                        else:
+                            st.error(f"Intern {delete_username} not found")
+                            logger.warning(f"Intern {delete_username} not found")
+                    except Exception as e:
+                        st.error(f"Error deleting intern: {str(e)}")
+                        logger.error(f"Error deleting intern {delete_username}: {str(e)}")
+        
+        with col3:
+            st.markdown('#### Upload Interns CSV')
+            with st.form('upload_interns_form'):
+                uploaded_file = st.file_uploader("Choose CSV", type="csv")
+                upload_button = st.form_submit_button('Upload')
+                
+                if upload_button and uploaded_file:
+                    count = import_interns_csv(uploaded_file)
+                    if count > 0:
+                        st.success(f"✅ Imported {count} interns")
+                        logger.info(f"Imported {count} interns via CSV")
+                        st.rerun()
+                    elif count == 0:
+                        st.warning("No new interns imported")
+                        logger.info("No new interns imported from CSV")
+
+# Load interns for admin view
+def load_interns():
+    logger.debug("Loading interns")
+    try:
+        result = databases.list_documents(
+            database_id=APPWRITE_DATABASE_ID,
+            collection_id=APPWRITE_INTERNS_COLLECTION_ID,
+            queries=[Query.limit(1000)]
+        )
+        logger.debug(f"Loaded {result['total']} interns")
+        return pd.DataFrame([{
+            'username': r.get('username', ''),
+            'college_name': r.get('college_name', '')
+        } for r in result['documents']])
+    except Exception as e:
+        st.error(f"Error loading interns: {str(e)}")
+        logger.error(f"Error loading interns: {str(e)}", exc_info=True)
+        return pd.DataFrame(columns=['username', 'college_name'])
 
 # Intern interface
 def intern_interface():
@@ -566,26 +650,14 @@ def intern_interface():
     st.markdown('**Event**: Summer of AI Internship, Swecha Office, Gachibowli, Hyderabad')
     st.markdown('---')
     
-    wifi_ok, current_ssid = check_wifi()
-    ip_ok, current_ip = check_ip()
-    network_ok = wifi_ok or ip_ok
-    
-    if not DEBUG_MODE and not network_ok:
-        st.error(f"🚫 Please connect to office Wi-Fi ({', '.join(OFFICE_WIFI_SSIDS)}, Password: freedom123) or IP range ({', '.join([r + 'x' for r in OFFICE_IP_RANGES])}). Detected: SSID={current_ssid}, IP={current_ip}")
-        return
-    
-    if DEBUG_MODE:
-        st.info(f"✅ Debug mode - Network check bypassed (Detected: SSID={current_ssid}, IP={current_ip})")
-    else:
-        st.success(f"✅ Connected to office network (SSID={current_ssid}, IP={current_ip})")
-    
     st.header('⚡ Quick Attendance')
     
     username = st.text_input('👤 Code.Swecha.org Username', 
-                            value=st.session_state.username,
-                            placeholder='Enter your username')
+                             value=st.session_state.username,
+                             placeholder='Enter your username')
     if username != st.session_state.username:
         st.session_state.username = username
+        logger.debug(f"Updated session username: {username}")
     
     col1, col2 = st.columns(2)
     with col1:
@@ -593,27 +665,36 @@ def intern_interface():
             if username.strip():
                 college_name = verify_username(username.strip())
                 if college_name:
+                    time_info = get_current_time_info()
+                    logger.debug(f"Mark IN time info: {time_info}")
                     if save_record(username.strip(), college_name, 'In'):
-                        st.success(f"✅ Welcome {username}! Marked IN at {datetime.datetime.now().strftime('%H:%M:%S')}")
+                        st.success(f"✅ Welcome {username}! Marked IN at {datetime.datetime.now(IST).strftime('%H:%M:%S')}")
+                        logger.info(f"Marked IN: {username}")
                         st.balloons()
             else:
                 st.error('❌ Please enter a username.')
+                logger.warning("IN attempt with empty username")
     
     with col2:
         if st.button('🔴 MARK OUT', use_container_width=True):
             if username.strip():
                 college_name = verify_username(username.strip())
                 if college_name:
+                    time_info = get_current_time_info()
+                    logger.debug(f"Mark OUT time info: {time_info}")
                     if save_record(username.strip(), college_name, 'Out'):
-                        st.success(f"✅ Goodbye {username}! Marked OUT at {datetime.datetime.now().strftime('%H:%M:%S')}")
+                        st.success(f"✅ Goodbye {username}! Marked OUT at {datetime.datetime.now(IST).strftime('%H:%M:%S')}")
+                        logger.info(f"Marked OUT: {username}")
             else:
                 st.error('❌ Please enter a username.')
+                logger.warning("OUT attempt with empty username")
     
     if username.strip():
         df = load_records()
-        today = datetime.datetime.now().strftime("%Y-%m-%d")
+        today = datetime.datetime.now(IST).strftime("%Y-%m-%d")
         if df.empty or 'username' not in df.columns:
             st.info("📝 No attendance records found for today.")
+            logger.debug(f"No records for {username} today")
             return
         
         user_today = df[(df['username'] == username.strip()) & (df['date'] == today)]
@@ -625,25 +706,27 @@ def intern_interface():
             col1, col2, col3 = st.columns(3)
             with col1:
                 in_status = '✅' if record['in_time'] else '❌'
-                st.info(f"🟤 **IN**: {in_status} {record.get('in_time', 'Not marked')}")
+                st.info(f"🟢 **IN**: {in_status} {record.get('in_time', 'Not marked')}")
             with col2:
-                out_status = '✅' if record['status'] else '❌'
-                st.info(f"🔴 **OUT**: {record.get('out_time', '')}")
+                out_status = '✅' if record['out_time'] else '❌'
+                st.info(f"🔴 **OUT**: {out_status} {record.get('out_time', 'Not marked')}")
             with col3:
-                hours = record.get('total_hours', 'Incomplete')
+                hours = record['total_hours'] if record['total_hours'] else 'Incomplete'
                 st.info(f"⏰ **Hours**: {hours}")
+            logger.debug(f"Displayed today's status for {username}")
 
 # Main application
 def main():
     if DEBUG_MODE:
         with st.sidebar:
             st.markdown('### 🔧 Configuration Status')
-            st.text(f"Wi-Fi SSIDs: {len(OFFICE_WIFI_SSIDS)} configured")
-            st.text(f"IP Ranges: {len(OFFICE_IP_RANGES)} configured")
             st.text(f"Admin Users: {len(ADMIN_CREDENTIALS)} configured")
             st.text(f"Debug Mode: {'ON' if DEBUG_MODE else 'OFF'}")
             st.text(f"Appwrite: {'Connected' if APPWRITE_PROJECT_ID else 'Not configured'}")
-            st.text(f"CSV: {'Loaded' if os.path.exists(INTERN_CSV_PATH) else 'Missing'}")
+            time_info = get_current_time_info()
+            st.text(f"Local Time: {time_info['local_time']}")
+            st.text(f"IST Time: {time_info['ist_time']}")
+            st.text(f"System TZ: {time_info['system_tz']}")
     
     st.sidebar.title('🏢 Summer of AI Tracker')
     
@@ -659,6 +742,9 @@ def main():
         admin_dashboard()
 
 if __name__ == '__main__':
+    logger.debug("Starting application")
+    time_info = get_current_time_info()
+    logger.debug(f"Startup time info: {time_info}")
     if platform.system() == 'Emscripten':
         import asyncio
         async def async_main():
