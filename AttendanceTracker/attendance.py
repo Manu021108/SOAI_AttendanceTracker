@@ -91,61 +91,61 @@ if 'username' not in st.session_state:
 #         return pd.DataFrame(columns=['username', 'college_name'])
 
 # Function to check Wi-Fi SSID
-def check_wifi():
-    try:
-        if platform.system() == "Emscripten":
-            if DEBUG_MODE:
-                st.info("🌐 Pyodide detected. Wi-Fi check bypassed.")
-            return True, "Pyodide"
-        elif platform.system() == "Linux":
-            current_ssid = None
-            try:
-                result = subprocess.run(['nmcli', '-t', '-f', 'ACTIVE,SSID', 'dev', 'wifi'], 
-                                       capture_output=True, text=True, check=True, timeout=30)
-                for line in result.stdout.split('\n'):
-                    if line.startswith('yes:'):
-                        current_ssid = line.split(':')[1].strip()
-                        break
-            except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
-                try:
-                    result = subprocess.run(['iwgetid', '-r'], capture_output=True, text=True, check=True, timeout=30)
-                    current_ssid = result.stdout.strip()
-                except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
-                    st.warning("⚠️ Wi-Fi detection failed. Install 'nmcli' or 'iwgetid': 'sudo apt-get install network-manager wireless-tools'.")
-                    return False, "Unknown"
-            if DEBUG_MODE:
-                st.info(f"📶 Detected Wi-Fi: {current_ssid or 'None'}")
-            return current_ssid in OFFICE_WIFI_SSIDS, current_ssid
-        elif platform.system() == "Windows":
-            result = subprocess.run(['netsh', 'wlan', 'show', 'interfaces'], 
-                                   capture_output=True, text=True, timeout=30)
-            current_ssid = None
-            for line in result.stdout.split('\n'):
-                if "SSID" in line and "BSSID" not in line:
-                    current_ssid = line.split(':')[1].strip()
-                    break
-            if DEBUG_MODE:
-                st.info(f"SSID: {current_ssid or 'None'}")
-            return current_ssid in OFFICE_WIFI_SSIDS, current_ssid
-        else:
-            st.warning(f"Wi-Fi detection not supported on {platform.system()}.")
-            return False, "Unknown"
-    except Exception as e:
-        if DEBUG_MODE:
-            st.error(f"Wi-Fi error: {e}")
-        return False, "Unknown"
+# def check_wifi():
+#     try:
+#         if platform.system() == "Emscripten":
+#             if DEBUG_MODE:
+#                 st.info("🌐 Pyodide detected. Wi-Fi check bypassed.")
+#             return True, "Pyodide"
+#         elif platform.system() == "Linux":
+#             current_ssid = None
+#             try:
+#                 result = subprocess.run(['nmcli', '-t', '-f', 'ACTIVE,SSID', 'dev', 'wifi'], 
+#                                        capture_output=True, text=True, check=True, timeout=30)
+#                 for line in result.stdout.split('\n'):
+#                     if line.startswith('yes:'):
+#                         current_ssid = line.split(':')[1].strip()
+#                         break
+#             except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
+#                 try:
+#                     result = subprocess.run(['iwgetid', '-r'], capture_output=True, text=True, check=True, timeout=30)
+#                     current_ssid = result.stdout.strip()
+#                 except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
+#                     st.warning("⚠️ Wi-Fi detection failed. Install 'nmcli' or 'iwgetid': 'sudo apt-get install network-manager wireless-tools'.")
+#                     return False, "Unknown"
+#             if DEBUG_MODE:
+#                 st.info(f"📶 Detected Wi-Fi: {current_ssid or 'None'}")
+#             return current_ssid in OFFICE_WIFI_SSIDS, current_ssid
+#         elif platform.system() == "Windows":
+#             result = subprocess.run(['netsh', 'wlan', 'show', 'interfaces'], 
+#                                    capture_output=True, text=True, timeout=30)
+#             current_ssid = None
+#             for line in result.stdout.split('\n'):
+#                 if "SSID" in line and "BSSID" not in line:
+#                     current_ssid = line.split(':')[1].strip()
+#                     break
+#             if DEBUG_MODE:
+#                 st.info(f"SSID: {current_ssid or 'None'}")
+#             return current_ssid in OFFICE_WIFI_SSIDS, current_ssid
+#         else:
+    #         st.warning(f"Wi-Fi detection not supported on {platform.system()}.")
+    #         return False, "Unknown"
+    # except Exception as e:
+    #     if DEBUG_MODE:
+    #         st.error(f"Wi-Fi error: {e}")
+    #     return False, "Unknown"
 
-# Function to check IP address
-def check_ip():
-    try:
-        ip = socket.gethostbyname(socket.gethostname())
-        if DEBUG_MODE:
-            st.info(f"🌐 Detected IP: {ip}")
-        return any(ip.startswith(ip_range) for ip_range in OFFICE_IP_RANGES), ip
-    except Exception as e:
-        if DEBUG_MODE:
-            st.error(f"IP error: {e}")
-        return False, "Unknown"
+# # Function to check IP address
+# def check_ip():
+#     try:
+#         ip = socket.gethostbyname(socket.gethostname())
+#         if DEBUG_MODE:
+#             st.info(f"🌐 Detected IP: {ip}")
+#         return any(ip.startswith(ip_range) for ip_range in OFFICE_IP_RANGES), ip
+#     except Exception as e:
+#         if DEBUG_MODE:
+#             st.error(f"IP error: {e}")
+#         return False, "Unknown"
 
 # Verify username in Appwrite interns collection
 def verify_username(username):
