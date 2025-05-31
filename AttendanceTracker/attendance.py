@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-import datetime
+from datetime import datetime
 import os
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -77,14 +77,22 @@ IST = pytz.timezone('Asia/Kolkata')
 
 # Debug timezone
 def get_current_time_info():
-    local_time = datetime.datetime.now()
-    ist_time = datetime.datetime.now(IST)
-    system_tz = time.tzname
-    return {
-        'local_time': local_time.strftime('%Y-%m-%d %H:%M:%S %Z'),
-        'ist_time': ist_time.strftime('%Y-%m-%d %H:%M:%S %Z'),
-        'system_tz': system_tz
-    }
+    try:
+        local_time = datetime.now()
+        ist_time = datetime.now(IST)
+        system_tz = time.tzname
+        return {
+            'local_time': local_time.strftime('%Y-%m-%d %H:%M:%S %Z'),
+            'ist_time': ist_time.strftime('%Y-%m-%d %H:%M:%S %Z'),
+            'system_tz': system_tz
+        }
+    except Exception as e:
+        logger.error(f"Error in get_current_time_info: {str(e)}", exc_info=True)
+        return {
+            'local_time': 'Error',
+            'ist_time': 'Error',
+            'system_tz': 'Error'
+        }
 
 # Verify username in Appwrite interns collection
 def verify_username(username):
@@ -211,8 +219,8 @@ def save_record(username, college_name, action):
     logger.debug(f"Saving record: username={username}, action={action}")
     time_info = get_current_time_info()
     logger.debug(f"Timezone info: {time_info}")
-    today = datetime.datetime.now(IST).strftime("%Y-%m-%d")
-    current_time = datetime.datetime.now(IST).strftime("%H:%M:%S")
+    today = datetime.now(IST).strftime("%Y-%m-%d")
+    current_time = datetime.now(IST).strftime("%H:%M:%S")
     logger.debug(f"Recording time: {today} {current_time} IST")
     
     try:
@@ -231,8 +239,8 @@ def save_record(username, college_name, action):
             if existing_records:
                 existing_record = existing_records[0]
                 if existing_record.get('in_time'):
-                    last_in_time = datetime.datetime.strptime(existing_record['in_time'], "%H:%M:%S")
-                    current_dt = datetime.datetime.strptime(current_time, "%H:%M:%S")
+                    last_in_time = datetime.strptime(existing_record['in_time'], "%H:%M:%S")
+                    current_dt = datetime.strptime(current_time, "%H:%M:%S")
                     time_diff = (current_dt - last_in_time).total_seconds() / 60
                     if time_diff < 5:
                         st.warning(f"⚠️ You marked IN {int(time_diff)} minutes ago. Wait before marking again.")
@@ -280,8 +288,8 @@ def save_record(username, college_name, action):
             
             existing_record = existing_records[0]
             if existing_record.get('out_time'):
-                last_out_time = datetime.datetime.strptime(existing_record['out_time'], "%H:%M:%S")
-                current_dt = datetime.datetime.strptime(current_time, "%H:%M:%S")
+                last_out_time = datetime.strptime(existing_record['out_time'], "%H:%M:%S")
+                current_dt = datetime.strptime(current_time, "%H:%M:%S")
                 time_diff = (current_dt - last_out_time).total_seconds() / 60
                 if time_diff < 5:
                     st.warning(f"⚠️ You marked OUT {int(time_diff)} minutes ago. Wait before marking again.")
@@ -289,8 +297,8 @@ def save_record(username, college_name, action):
                     return False
             
             try:
-                in_time_dt = datetime.datetime.strptime(existing_record['in_time'], "%H:%M:%S")
-                out_time_dt = datetime.datetime.strptime(current_time, "%H:%M:%S")
+                in_time_dt = datetime.strptime(existing_record['in_time'], "%H:%M:%S")
+                out_time_dt = datetime.strptime(current_time, "%H:%M:%S")
                 total_seconds = (out_time_dt - in_time_dt).total_seconds()
                 total_hours = float(round(total_seconds / 3600, 2))
             except Exception as e:
@@ -535,7 +543,7 @@ def admin_dashboard():
                 st.download_button(
                     label='📥 Export All Records',
                     data=csv,
-                    file_name=f"Attendance_Records_{datetime.datetime.now(IST).strftime('%Y%m%d_%H%M')}.csv",
+                    file_name=f"Attendance_Records_{datetime.now(IST).strftime('%Y%m%d_%H%M')}.csv",
                     mime='text/csv'
                 )
         
@@ -545,7 +553,7 @@ def admin_dashboard():
                 st.download_button(
                     label='📊 Export College Stats',
                     data=csv,
-                    file_name=f"College_Statistics_{datetime.datetime.now(IST).strftime('%Y%m%d_%H%M')}.csv",
+                    file_name=f"College_Statistics_{datetime.now(IST).strftime('%Y%m%d_%H%M')}.csv",
                     mime='text/csv'
                 )
     
@@ -669,7 +677,7 @@ def intern_interface():
                     time_info = get_current_time_info()
                     logger.debug(f"Mark IN time info: {time_info}")
                     if save_record(username.strip(), college_name, 'In'):
-                        st.success(f"✅ Welcome {username}! Marked IN at {datetime.datetime.now(IST).strftime('%H:%M:%S')}")
+                        st.success(f"✅ Welcome {username}! Marked IN at {datetime.now(IST).strftime('%H:%M:%S')}")
                         logger.info(f"Marked IN: {username}")
                         st.balloons()
             else:
@@ -684,7 +692,7 @@ def intern_interface():
                     time_info = get_current_time_info()
                     logger.debug(f"Mark OUT time info: {time_info}")
                     if save_record(username.strip(), college_name, 'Out'):
-                        st.success(f"✅ Goodbye {username}! Marked OUT at {datetime.datetime.now(IST).strftime('%H:%M:%S')}")
+                        st.success(f"✅ Goodbye {username}! Marked OUT at {datetime.now(IST).strftime('%H:%M:%S')}")
                         logger.info(f"Marked OUT: {username}")
             else:
                 st.error('❌ Please enter a username.')
@@ -692,7 +700,7 @@ def intern_interface():
     
     if username.strip():
         df = load_records()
-        today = datetime.datetime.now(IST).strftime("%Y-%m-%d")
+        today = datetime.now(IST).strftime("%Y-%m-%d")
         if df.empty or 'username' not in df.columns:
             st.info("📝 No attendance records found for today.")
             logger.debug(f"No records for {username} today")
