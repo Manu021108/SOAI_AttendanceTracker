@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 import platform
 import pytz
 import logging
+import time
 
 # Setup logging
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -79,6 +80,17 @@ if 'username' not in st.session_state:
 
 # Timezone for IST
 IST = pytz.timezone('Asia/Kolkata')
+
+# Debug timezone
+def get_current_time_info():
+    local_time = datetime.datetime.now()
+    ist_time = datetime.datetime.now(IST)
+    system_tz = time.tzname
+    return {
+        'local_time': local_time.strftime('%Y-%m-%d %H:%M:%S %Z'),
+        'ist_time': ist_time.strftime('%Y-%m-%d %H:%M:%S %Z'),
+        'system_tz': system_tz
+    }
 
 # Verify username in Appwrite interns collection
 def verify_username(username):
@@ -214,8 +226,11 @@ def load_records():
 # Save attendance record to Appwrite
 def save_record(username, college_name, action):
     logger.debug(f"Saving record: username={username}, action={action}")
+    time_info = get_current_time_info()
+    logger.debug(f"Timezone info: {time_info}")
     today = datetime.datetime.now(IST).strftime("%Y-%m-%d")
     current_time = datetime.datetime.now(IST).strftime("%H:%M:%S")
+    logger.debug(f"Recording time: {today} {current_time} IST")
     
     try:
         result = databases.list_documents(
@@ -292,7 +307,7 @@ def save_record(username, college_name, action):
                 total_hours = float(round(total_seconds / 3600, 2))
             except Exception as e:
                 st.warning(f"Error calculating hours: {str(e)}")
-                logger.warning(f"Error calculating hours for {username}: {str(e)}")
+                logger.warning(f"Error calculating hours: {str(e)}")
                 total_hours = 0.0
             
             databases.update_document(
@@ -301,16 +316,16 @@ def save_record(username, college_name, action):
                 document_id=existing_record['$id'],
                 data={
                     'out_time': current_time,
-                    'out_ip': '',
                     'total_hours': total_hours,
+                    'out_ip': '',
                     'status': status
                 }
             )
-            logger.debug(f"Updated OUT record for {username}")
+            logger.debug(f"Updated OUT record for {current_time}")
         return True
     except Exception as e:
         st.error(f"Error saving record: {str(e)}")
-        logger.error(f"Error saving record for {username}: {str(e)}", exc_info=True)
+        logger.error(f"Error f saving record for {username}: {str(e)}", exc_info=True)
         return False
 
 # Calculate summary statistics
@@ -327,7 +342,7 @@ def calculate_summary_stats(df):
             'complete_sessions': 0
         }
     
-    complete_records = df[(df['in_time'] != '') & (df['out_time'] != '') & (df['total_hours'] != '')]
+    complete_records = df[(df['in_time'] != '') & (df['out_time'] != '') & (df['total_hours'] != '')])
     
     stats = {
         'total_interns': df['username'].nunique(),
@@ -358,7 +373,7 @@ def generate_analytics(df):
     status_counts = df['status'].value_counts().reset_index()
     status_counts.columns = ['Status', 'Count']
     
-    daily_trends = df.groupby('date').agg({
+    daily_trends = df.groupby('date']).agg({
         'username': 'nunique',
         'status': lambda x: (x == 'In').sum(),
         'total_hours': 'sum'
@@ -367,7 +382,7 @@ def generate_analytics(df):
     daily_trends['Total Hours'] = daily_trends['Total Hours'].round(2)
     
     plt.style.use('default')
-    fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(15, 12))
+    fig, ((ax1, ax2), (ax3, ax4))) = plt.subplots(2, 2, figsize=(15, 12))
     
     if not college_stats.empty:
         bars = ax1.bar(college_stats['College Name'], college_stats['Unique Interns'], 
@@ -383,7 +398,7 @@ def generate_analytics(df):
     if not status_counts.empty:
         colors = ['lightgreen' if 'In' in status else 'lightcoral' for status in status_counts['Status']]
         ax2.pie(status_counts['Count'], labels=status_counts['Status'], 
-                autopct='%1.1f%%', startangle=90, colors=colors)
+            autopct='%1.1f%%', startangle=90, colors=colors)
         ax2.set_title('Status Distribution')
     
     if not daily_trends.empty:
@@ -399,7 +414,7 @@ def generate_analytics(df):
     
     hours_data = pd.to_numeric(df['total_hours'], errors='coerce').dropna()
     if not hours_data.empty:
-        ax4.hist(hours_data, bins=10, color='gold', edgecolor='orange')
+        ax4.hist(hours_data, bins=10, color='gold', edgecolor='black')
         ax4.set_xlabel('Hours Spent')
         ax4.set_ylabel('Frequency')
         ax4.set_title('Session Hours Distribution')
@@ -625,6 +640,8 @@ def intern_interface():
             if username.strip():
                 college_name = verify_username(username.strip())
                 if college_name is not None:
+                    time_info = get_current_time_info()
+                    logger.debug(f"Mark IN time info: {time_info}")
                     if save_record(username.strip(), college_name, 'In'):
                         st.success(f"✅ Welcome {username}! Marked IN at {datetime.datetime.now(IST).strftime('%H:%M:%S')}")
                         logger.info(f"Marked IN: {username}")
@@ -638,6 +655,8 @@ def intern_interface():
             if username.strip():
                 college_name = verify_username(username.strip())
                 if college_name is not None:
+                    time_info = get_current_time_info()
+                    logger.debug(f"Mark OUT time info: {time_info}")
                     if save_record(username.strip(), college_name, 'Out'):
                         st.success(f"✅ Goodbye {username}! Marked OUT at {datetime.datetime.now(IST).strftime('%H:%M:%S')}")
                         logger.info(f"Marked OUT: {username}")
@@ -679,7 +698,10 @@ def main():
             st.text(f"Admins: {len(ADMIN_CREDENTIALS)}")
             st.text(f"Debug: {'ON' if DEBUG_MODE else 'OFF'}")
             st.text(f"Appwrite: {'Connected' if APPWRITE_PROJECT_ID else 'Not set'}")
-            st.text(f"Timezone: IST (Asia/Kolkata)")
+            time_info = get_current_time_info()
+            st.text(f"Local Time: {time_info['local_time']}")
+            st.text(f"IST Time: {time_info['ist_time']}")
+            st.text(f"System TZ: {time_info['system_tz']}")
     
     st.sidebar.title('🏢 Summer of AI')
     
@@ -696,6 +718,8 @@ def main():
 
 if __name__ == '__main__':
     logger.debug("Starting application")
+    time_info = get_current_time_info()
+    logger.debug(f"Startup time info: {time_info}")
     if platform.system() == 'Emscripten':
         import asyncio
         async def async_main():
