@@ -15,20 +15,35 @@ from dotenv import load_dotenv
 # Load environment variables
 load_dotenv()
 
-# Configuration from .env file
-OFFICE_WIFI_SSIDS = os.getenv('OFFICE_WIFI_SSIDS', '').split(',') if os.getenv('OFFICE_WIFI_SSIDS') else []
-OFFICE_IP_RANGES = os.getenv('OFFICE_IP_RANGES', '').split(',') if os.getenv('OFFICE_IP_RANGES') else []
-CHART_FILE = os.getenv('CHART_FILE', 'attendance_by_college.png')
-DEBUG_MODE = os.getenv('DEBUG_MODE', 'True').lower() == 'true'
-#INTERN_CSV_PATH = os.getenv('INTERN_CSV_PATH', 'interns.csv')
+# Helper to get environment variable or Streamlit secret
+def get_env(key, default=None):
+    return os.getenv(key) or st.secrets.get(key, default)
 
-# Appwrite configuration
-APPWRITE_ENDPOINT = os.getenv('APPWRITE_ENDPOINT', 'https://cloud.appwrite.io/v1')
-APPWRITE_PROJECT_ID = os.getenv('APPWRITE_PROJECT_ID')
-APPWRITE_API_KEY = os.getenv('APPWRITE_API_KEY')
-APPWRITE_DATABASE_ID = os.getenv('APPWRITE_DATABASE_ID')
-APPWRITE_INTERNS_COLLECTION_ID = os.getenv('APPWRITE_INTERNS_COLLECTION_ID')
-APPWRITE_ATTENDANCE_COLLECTION_ID = os.getenv('APPWRITE_ATTENDANCE_COLLECTION_ID')
+# General Configuration
+OFFICE_WIFI_SSIDS = get_env('OFFICE_WIFI_SSIDS', '').split(',') if get_env('OFFICE_WIFI_SSIDS') else []
+OFFICE_IP_RANGES = get_env('OFFICE_IP_RANGES', '').split(',') if get_env('OFFICE_IP_RANGES') else []
+CHART_FILE = get_env('CHART_FILE', 'attendance_by_college.png')
+DEBUG_MODE = get_env('DEBUG_MODE', 'True').lower() == 'true'
+
+# Appwrite Configuration
+APPWRITE_ENDPOINT = get_env('APPWRITE_ENDPOINT', 'https://cloud.appwrite.io/v1')
+APPWRITE_PROJECT_ID = get_env('APPWRITE_PROJECT_ID')
+APPWRITE_API_KEY = get_env('APPWRITE_API_KEY')
+APPWRITE_DATABASE_ID = get_env('APPWRITE_DATABASE_ID')
+APPWRITE_INTERNS_COLLECTION_ID = get_env('APPWRITE_INTERNS_COLLECTION_ID')
+APPWRITE_ATTENDANCE_COLLECTION_ID = get_env('APPWRITE_ATTENDANCE_COLLECTION_ID')
+
+# Validate Appwrite Configuration
+missing = []
+for key, value in {
+    'APPWRITE_PROJECT_ID': APPWRITE_PROJECT_ID,
+    'APPWRITE_API_KEY': APPWRITE_API_KEY,
+    'APPWRITE_DATABASE_ID': APPWRITE_DATABASE_ID,
+    'APPWRITE_INTERNS_COLLECTION_ID': APPWRITE_INTERNS_COLLECTION_ID,
+    'APPWRITE_ATTENDANCE_COLLECTION_ID': APPWRITE_ATTENDANCE_COLLECTION_ID,
+}.items():
+    if not value:
+        missing.append(key)
 
 # Validate Appwrite configuration
 if not all([APPWRITE_PROJECT_ID, APPWRITE_API_KEY, APPWRITE_DATABASE_ID, APPWRITE_ATTENDANCE_COLLECTION_ID]):
