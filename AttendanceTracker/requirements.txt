@@ -4,9 +4,8 @@ matplotlib
 seaborn
 python-dotenv
 pytz
-plotly==5.21.0
-loguru
-streamlit==1.38.0
-pandas==2.2.2
-plotly==5.24.1
-appwrite==5.0.2
+plotly
+streamlit
+pandas
+plotly
+appwrite
