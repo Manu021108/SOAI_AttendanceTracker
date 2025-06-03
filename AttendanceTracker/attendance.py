@@ -186,7 +186,7 @@ def load_records():
                 st.info("No attendance records found in Appwrite.")
             return pd.DataFrame(columns=[
                 'username', 'college_name', 'date', 'in_time', 'out_time',
-                'total_hours', 'in_ip', 'out_ip', 'status'
+                'total_hours', 'status'
             ])
         df = pd.DataFrame([{
             'username': r.get('username', ''),
@@ -195,13 +195,11 @@ def load_records():
             'in_time': r.get('in_time', ''),
             'out_time': r.get('out_time', ''),
             'total_hours': float(r.get('total_hours', 0.0)),
-            'in_ip': r.get('in_ip', ''),
-            'out_ip': r.get('out_ip', ''),
             'status': r.get('status', '')
         } for r in result['documents']])
         # Ensure all columns exist
         required_columns = ['username', 'college_name', 'date', 'in_time', 'out_time', 
-                           'total_hours', 'in_ip', 'out_ip', 'status']
+                           'total_hours', 'status']
         for col in required_columns:
             if col not in df.columns:
                 df[col] = '' if col != 'total_hours' else 0.0
@@ -211,7 +209,7 @@ def load_records():
         logger.error(f"Error loading records: {str(e)}", exc_info=True)
         return pd.DataFrame(columns=[
             'username', 'college_name', 'date', 'in_time', 'out_time',
-            'total_hours', 'in_ip', 'out_ip', 'status'
+            'total_hours', 'status'
         ])
 
 # Save attendance record to Appwrite
