@@ -4,6 +4,9 @@ from datetime import datetime
 import os
 import matplotlib.pyplot as plt
 import seaborn as sns
+import plotly.graph_objects as go
+import plotly.express as px
+from plotly.subplots import make_subplots
 from appwrite.client import Client
 from appwrite.services.databases import Databases
 from appwrite.query import Query
@@ -12,6 +15,7 @@ import platform
 import pytz
 import logging
 import time
+import hashlib
 
 # Setup logging
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -43,7 +47,7 @@ if not all([APPWRITE_PROJECT_ID, APPWRITE_API_KEY, APPWRITE_DATABASE_ID,
         'APPWRITE_INTERNS_COLLECTION_ID': APPWRITE_INTERNS_COLLECTION_ID
     }.items() if not v]
     logger.error(f"Missing Appwrite configuration: {', '.join(missing)}")
-    st.error(f"❌ Missing Appwrite configuration: {', '.join(missing)}")
+    st.error(f"❌️ Missing Appwrite configuration: {', '.join(missing)}")
     st.stop()
 
 # Parse admin credentials
@@ -71,6 +75,11 @@ if 'user_role' not in st.session_state:
     st.session_state.user_role = None
 if 'username' not in st.session_state:
     st.session_state.username = ""
+if 'device_fingerprint' not in st.session_state:
+    # Create a device fingerprint based on user agent and other factors
+    st.session_state.device_fingerprint = hashlib.md5(
+        f"{st.session_state.get('user_agent', 'unknown')}_{platform.platform()}".encode()
+    ).hexdigest()[:12]
 
 # Timezone for IST
 IST = pytz.timezone('Asia/Kolkata')
@@ -78,7 +87,7 @@ IST = pytz.timezone('Asia/Kolkata')
 # Debug timezone
 def get_current_time_info():
     try:
-        local_time = datetime.datetime.now()
+        local_time = datetime.now()
         ist_time = datetime.now(IST)
         system_tz = time.tzname
         return {
@@ -93,6 +102,26 @@ def get_current_time_info():
             'ist_time': 'Error',
             'system_tz': 'Error'
         }
+
+# Admin login function
+def admin_login():
+    st.header('🔐 Admin Login')
+    
+    with st.form('admin_login'):
+        username = st.text_input('👤 Username')
+        password = st.text_input('🔑 Password', type='password')
+        login_button = st.form_submit_button('Login')
+        
+        if login_button:
+            if username in ADMIN_CREDENTIALS and ADMIN_CREDENTIALS[username] == password:
+                st.session_state.authenticated = True
+                st.session_state.user_role = username
+                logger.info(f"Admin {username} logged in successfully")
+                st.success('✅ Login successful!')
+                st.rerun()
+            else:
+                st.error('❌ Invalid credentials')
+                logger.warning(f"Failed login attempt: {username}")
 
 # Verify username in Appwrite interns collection
 def verify_username(username):
@@ -115,6 +144,37 @@ def verify_username(username):
         st.error(f"Error verifying username: {str(e)}")
         logger.error(f"Error verifying username {username}: {str(e)}", exc_info=True)
         return None
+
+# Check if device has already marked attendance today
+def check_device_attendance_today(username, action):
+    logger.debug(f"Checking device attendance for {username}, action: {action}")
+    today = datetime.now(IST).strftime("%Y-%m-%d")
+    device_id = st.session_state.device_fingerprint
+    
+    try:
+        # Check if this device has already marked the same action today
+        result = databases.list_documents(
+            database_id=APPWRITE_DATABASE_ID,
+            collection_id=APPWRITE_ATTENDANCE_COLLECTION_ID,
+            queries=[
+                Query.equal('username', username),
+                Query.equal('date', today),
+                Query.equal('device_id', device_id)
+            ]
+        )
+        
+        existing_records = result['documents']
+        if existing_records:
+            record = existing_records[0]
+            if action == "In" and record.get('in_time'):
+                return False, "You have already marked IN from this device today."
+            elif action == "Out" and record.get('out_time'):
+                return False, "You have already marked OUT from this device today."
+        
+        return True, "OK"
+    except Exception as e:
+        logger.error(f"Error checking device attendance: {str(e)}", exc_info=True)
+        return True, "OK"  # Allow if check fails
 
 # Import CSV to interns collection
 def import_interns_csv(uploaded_file):
@@ -186,7 +246,7 @@ def load_records():
                 st.info("No attendance records found in Appwrite.")
             return pd.DataFrame(columns=[
                 'username', 'college_name', 'date', 'in_time', 'out_time',
-                'total_hours', 'status'
+                'total_hours', 'status', 'device_id'
             ])
         df = pd.DataFrame([{
             'username': r.get('username', ''),
@@ -195,31 +255,45 @@ def load_records():
             'in_time': r.get('in_time', ''),
             'out_time': r.get('out_time', ''),
             'total_hours': float(r.get('total_hours', 0.0)),
-            'status': r.get('status', '')
+            'status': r.get('status', ''),
+            'device_id': r.get('device_id', '')
         } for r in result['documents']])
+        
         # Ensure all columns exist
         required_columns = ['username', 'college_name', 'date', 'in_time', 'out_time', 
-                           'total_hours', 'status']
+                           'total_hours', 'status', 'device_id']
         for col in required_columns:
             if col not in df.columns:
-                df[col] = '' if col != 'total_hours' else 0.0
+                if col == 'total_hours':
+                    df[col] = 0.0
+                else:
+                    df[col] = ''
         return df
     except Exception as e:
         st.error(f"Error loading records: {str(e)}")
         logger.error(f"Error loading records: {str(e)}", exc_info=True)
         return pd.DataFrame(columns=[
             'username', 'college_name', 'date', 'in_time', 'out_time',
-            'total_hours', 'status'
+            'total_hours', 'status', 'device_id'
         ])
 
 # Save attendance record to Appwrite
 def save_record(username, college_name, action):
     logger.debug(f"Saving record: username={username}, action={action}")
+    
+    # Check device restriction
+    can_mark, message = check_device_attendance_today(username, action)
+    if not can_mark:
+        st.warning(f"⚠️ {message}")
+        logger.warning(f"Device restriction: {message}")
+        return False
+    
     time_info = get_current_time_info()
     logger.debug(f"Timezone info: {time_info}")
     today = datetime.now(IST).strftime("%Y-%m-%d")
     current_time = datetime.now(IST).strftime("%H:%M:%S")
-    logger.debug(f"Recording time: {today} {current_time} IST")
+    device_id = st.session_state.device_fingerprint
+    logger.debug(f"Recording time: {today} {current_time} IST, Device: {device_id}")
     
     try:
         result = databases.list_documents(
@@ -237,7 +311,6 @@ def save_record(username, college_name, action):
             if existing_records:
                 existing_record = existing_records[0]
                 if existing_record.get('in_time'):
-                    if existing_record.get('in_time'):
                     st.warning("⚠️ You have already marked IN today.")
                     logger.warning(f"Duplicate IN blocked for {username}")
                     return False
@@ -250,7 +323,8 @@ def save_record(username, college_name, action):
                         'in_time': current_time,
                         'status': 'Checked In',
                         'out_time': '',
-                        'total_hours': 0.0
+                        'total_hours': 0.0,
+                        'device_id': device_id
                     }
                 )
                 logger.debug(f"Updated IN record for {username}")
@@ -266,7 +340,8 @@ def save_record(username, college_name, action):
                         'in_time': current_time,
                         'out_time': '',
                         'total_hours': 0.0,
-                        'status': 'Checked In'
+                        'status': 'Checked In',
+                        'device_id': device_id
                     }
                 )
                 logger.debug(f"Created IN record for {username}")
@@ -282,7 +357,6 @@ def save_record(username, college_name, action):
                 st.warning("⚠️ You have already marked OUT today.")
                 logger.warning(f"Duplicate OUT blocked for {username}")
                 return False
-
             
             try:
                 in_time_dt = datetime.strptime(existing_record['in_time'], "%H:%M:%S")
@@ -301,7 +375,8 @@ def save_record(username, college_name, action):
                 data={
                     'out_time': current_time,
                     'total_hours': total_hours,
-                    'status': 'Checked Out'
+                    'status': 'Checked Out',
+                    'device_id': device_id
                 }
             )
             logger.debug(f"Updated OUT record for {username}")
@@ -322,9 +397,13 @@ def calculate_summary_stats(df):
             'active_days': 0,
             'avg_hours': 0,
             'total_hours': 0,
-            'complete_sessions': 0
+            'complete_sessions': 0,
+            'checked_in_today': 0,
+            'checked_out_today': 0
         }
     
+    today = datetime.now(IST).strftime("%Y-%m-%d")
+    today_records = df[df['date'] == today]
     complete_records = df[(df['in_time'] != '') & (df['out_time'] != '') & (df['total_hours'] != '')]
     
     stats = {
@@ -334,7 +413,9 @@ def calculate_summary_stats(df):
         'active_days': df['date'].nunique() if 'date' in df.columns else 0,
         'avg_hours': 0,
         'total_hours': 0,
-        'complete_sessions': len(complete_records)
+        'complete_sessions': len(complete_records),
+        'checked_in_today': len(today_records[today_records['in_time'] != '']),
+        'checked_out_today': len(today_records[today_records['out_time'] != ''])
     }
     
     if not complete_records.empty:
@@ -345,12 +426,15 @@ def calculate_summary_stats(df):
     
     logger.debug(f"Summary stats: {stats}")
     return stats
-# Generate analytics
-def generate_analytics(df):
-    logger.debug("Generating analytics")
+
+
+def generate_enhanced_analytics(df):
+    logger.debug("Generating enhanced analytics")
     if df.empty or 'username' not in df.columns:
-        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
-    
+        st.warning("No valid data to display.")
+        return
+
+    # College-wise statistics
     college_stats = df.groupby('college_name').agg({
         'username': 'nunique',
         'date': 'nunique',
@@ -358,10 +442,8 @@ def generate_analytics(df):
     }).reset_index()
     college_stats.columns = ['College Name', 'Unique Interns', 'Active Days', 'Total Hours']
     college_stats['Total Hours'] = college_stats['Total Hours'].round(2)
-    
-    status_counts = df['status'].value_counts().reset_index()
-    status_counts.columns = ['Status', 'Count']
-    
+
+    # Daily trends
     daily_trends = df.groupby('date').agg({
         'username': 'nunique',
         'status': lambda x: (x == 'Checked In').sum(),
@@ -369,106 +451,155 @@ def generate_analytics(df):
     }).reset_index()
     daily_trends.columns = ['Date', 'Unique Interns', 'Check-ins', 'Total Hours']
     daily_trends['Total Hours'] = daily_trends['Total Hours'].round(2)
-    
+    daily_trends['Date'] = pd.to_datetime(daily_trends['Date'])
+
+    # Status distribution
+    status_counts = df['status'].value_counts().reset_index()
+    status_counts.columns = ['Status', 'Count']
+
+    # Subplots
     fig = make_subplots(
         rows=2, cols=2,
-        specs=[[{"type": "bar"}, {"type": "pie"}],
-               [{"type": "scatter"}, {"type": "histogram"}]],
-        subplot_titles=("Unique Interns by College", "Status Distribution",
-                        "Daily Attendance Trends", "Distribution of Session Hours")
+        specs=[[{"type": "xy"}, {"type": "domain"}],
+               [{"type": "xy"}, {"type": "xy"}]],
+        subplot_titles=("👥 Unique Interns by College",
+                        "📊 Status Distribution",
+                        "📈 Daily Attendance Trends",
+                        "⏰ Session Hours Distribution"),
+        vertical_spacing=0.12,
+        horizontal_spacing=0.1
     )
-    
+
+    # Bar chart
     if not college_stats.empty:
+        colors = px.colors.qualitative.Set3[:len(college_stats)]
         bar_trace = go.Bar(
             x=college_stats['College Name'],
             y=college_stats['Unique Interns'],
-            marker_line_color='navy',
-            marker_line_width=1.5,
-            opacity=0.7,
+            marker=dict(color=colors, line=dict(color='rgb(8,48,107)', width=1.5), opacity=0.8),
             text=college_stats['Unique Interns'],
             textposition='auto',
-            hovertemplate='<b>%{x}</b><br>Interns: %{y}<br>Active Days: %{customdata[0]}<br>Total Hours: %{customdata[1]}',
-            customdata=college_stats[['Active Days', 'Total Hours']].values
+            textfont=dict(size=12, color='white'),
+            hovertemplate=(
+                '<b>%{x}</b><br>' +
+                'Unique Interns: %{y}<br>' +
+                'Active Days: %{customdata[0]}<br>' +
+                'Total Hours: %{customdata[1]:.1f}h<br><extra></extra>'
+            ),
+            customdata=college_stats[['Active Days', 'Total Hours']].values,
+            showlegend=False
         )
         fig.add_trace(bar_trace, row=1, col=1)
-    
+
+    # Pie chart
     if not status_counts.empty:
-        colors = ['lightgreen' if 'In' in status else 'lightcoral' for status in status_counts['Status']]
         pie_trace = go.Pie(
             labels=status_counts['Status'],
             values=status_counts['Count'],
             textinfo='percent+label',
-            marker_colors=colors,
-            hovertemplate='<b>%{label}</b><br>Count: %{value}<br>Percent: %{percent}',
-            pull=[0.05 if 'In' in status else 0 for status in status_counts['Status']]
+            textfont=dict(size=12),
+            marker=dict(colors=px.colors.qualitative.Pastel, line=dict(color='#FFFFFF', width=2)),
+            hovertemplate='<b>%{label}</b><br>Count: %{value}<br>Percentage: %{percent}<extra></extra>',
+            pull=[0.05 if 'In' in status else 0 for status in status_counts['Status']],
+            showlegend=True
         )
         fig.add_trace(pie_trace, row=1, col=2)
-    
+
+    # Line chart
     if not daily_trends.empty:
-        line_interns = go.Scatter(
+        line1 = go.Scatter(
             x=daily_trends['Date'],
             y=daily_trends['Unique Interns'],
             mode='lines+markers',
             name='Unique Interns',
-            line=dict(color='blue', width=2),
-            marker=dict(size=8),
-            hovertemplate='<b>%{x}</b><br>Interns: %{y}<br>Total Hours: %{customdata}',
+            line=dict(color='#FF6B6B', width=3),
+            marker=dict(size=8, color='#FF6B6B'),
+            hovertemplate='<b>%{x|%Y-%m-%d}</b><br>Unique Interns: %{y}<br>Total Hours: %{customdata:.1f}h<extra></extra>',
             customdata=daily_trends['Total Hours']
         )
-        line_checkins = go.Scatter(
+        line2 = go.Scatter(
             x=daily_trends['Date'],
             y=daily_trends['Check-ins'],
             mode='lines+markers',
             name='Check-ins',
-            line=dict(color='green', width=2),
-            marker=dict(size=8, symbol='square'),
-            hovertemplate='<b>%{x}</b><br>Check-ins: %{y}<br>Total Hours: %{customdata}',
+            line=dict(color='#4ECDC4', width=3),
+            marker=dict(size=8, color='#4ECDC4'),
+            hovertemplate='<b>%{x|%Y-%m-%d}</b><br>Check-ins: %{y}<br>Total Hours: %{customdata:.1f}h<extra></extra>',
             customdata=daily_trends['Total Hours']
         )
-        fig.add_trace(line_interns, row=2, col=1)
-        fig.add_trace(line_checkins, row=2, col=1)
-    
+        fig.add_trace(line1, row=2, col=1)
+        fig.add_trace(line2, row=2, col=1)
+
+    # Histogram
     hours_data = pd.to_numeric(df['total_hours'], errors='coerce').dropna()
     if not hours_data.empty:
-        hist_trace = go.Histogram(
+        hist = go.Histogram(
             x=hours_data,
-            nbinsx=max(10, len(hours_data)//5),
-            marker_color='gold',
-            marker_line_color='orange',
-            marker_line_width=1,
-            opacity=0.7,
-            hovertemplate='Hours: %{x}<br>Count: %{y}'
+            nbinsx=max(10, min(20, len(hours_data) // 3)),
+            marker=dict(color='#FFEAA7', line=dict(color='#FDCB6E', width=1), opacity=0.8),
+            hovertemplate='Hours Range: %{x}<br>Count: %{y}<extra></extra>',
+            showlegend=False
         )
-        mean_line = go.Scatter(
-            x=[hours_data.mean(), hours_data.mean()],
-            y=[0, hours_data.value_counts(bins=max(10, len(hours_data)//5)).max()],
-            mode='lines',
-            line=dict(color='red', dash='dash'),
-            name=f'Mean: {hours_data.mean():.2f}h',
-            hoverinfo='skip'
+        fig.add_trace(hist, row=2, col=2)
+
+        # Add vertical line for mean
+        mean_hours = hours_data.mean()
+        fig.add_shape(
+            type="line",
+            x0=mean_hours, x1=mean_hours,
+            y0=0, y1=1,
+            xref='x4', yref='paper',
+            line=dict(color="red", dash="dash", width=2)
         )
-        fig.add_trace(hist_trace, row=2, col=2)
-        fig.add_trace(mean_line, row=2, col=2)
-    
+        fig.add_annotation(
+            x=mean_hours, y=1.05,
+            xref='x4', yref='paper',
+            text=f"Mean: {mean_hours:.1f}h",
+            showarrow=False,
+            font=dict(color="red", size=12)
+        )
+
+    # Layout styling
     fig.update_layout(
-        height=800,
-        width=1200,
-        showlegend=True,
+        height=900,
+        width=None,
+        autosize=True,
         template='plotly_white',
-        title_text="Attendance Analytics Dashboard",
-        title_x=0.5
+        showlegend=True,
+        title=dict(
+            text="📊 Real-time Attendance Analytics Dashboard",
+            x=0.5,
+            font=dict(size=24, color='#2c3e50')
+        ),
+        font=dict(family="Arial, sans-serif", size=12),
+        plot_bgcolor='rgba(0,0,0,0)',
+        paper_bgcolor='rgba(0,0,0,0)',
+        margin=dict(l=50, r=50, t=100, b=50)
     )
-    fig.update_xaxes(tickangle=45, row=1, col=1)
-    fig.update_xaxes(tickangle=45, row=2, col=1)
-    
+
+    # Axis labels
+    fig.update_xaxes(title_text="College Name", row=1, col=1, tickangle=45, title_font=dict(size=12))
+    fig.update_yaxes(title_text="Count", row=1, col=1)
+
+    fig.update_xaxes(title_text="Date", row=2, col=1, tickangle=45, title_font=dict(size=12))
+    fig.update_yaxes(title_text="Count", row=2, col=1)
+
+    fig.update_xaxes(title_text="Hours", row=2, col=2)
+    fig.update_yaxes(title_text="Frequency", row=2, col=2)
+
+    # Streamlit-compatible rendering
+    # st.plotly_chart(fig, use_container_width=True)
+
+    # Save static image for fallback
     try:
         fig.write_image(CHART_FILE, format="png", width=1200, height=800, scale=2)
         logger.debug(f"Saved analytics chart to {CHART_FILE}")
     except Exception as e:
         logger.error(f"Failed to save chart: {str(e)}")
     
-    return college_stats, status_counts, daily_trends
-# Admin dashboard
+    return fig, college_stats, status_counts, daily_trends
+
+# Admin dashboard with enhanced analytics
 def admin_dashboard():
     st.title(f'📊 Admin Dashboard - {st.session_state.user_role.title()}')
     
@@ -480,6 +611,14 @@ def admin_dashboard():
     
     st.markdown('---')
     
+    # Auto-refresh toggle
+    col1, col2 = st.columns([3, 1])
+    with col2:
+        auto_refresh = st.checkbox('🔄 Auto-refresh (30s)', value=False)
+        if auto_refresh:
+            time.sleep(30)
+            st.rerun()
+    
     df = load_records()
     
     if df.empty or 'username' not in df.columns:
@@ -488,7 +627,8 @@ def admin_dashboard():
     
     stats = calculate_summary_stats(df)
     
-    col1, col2, col3, col4, col5 = st.columns(5)
+    # Enhanced metrics display
+    col1, col2, col3, col4, col5, col6 = st.columns(6)
     with col1:
         st.metric('👥 Total Interns', stats['total_interns'])
     with col2:
@@ -499,15 +639,50 @@ def admin_dashboard():
         st.metric('⏰ Avg Hours', f"{stats['avg_hours']}h")
     with col5:
         st.metric('🔢 Total Hours', f"{stats['total_hours']}h")
+    with col6:
+        st.metric('✅ Complete Sessions', stats['complete_sessions'])
+    
+    # Today's stats
+    st.markdown('### 📅 Today\'s Statistics')
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric('🟢 Checked In Today', stats['checked_in_today'])
+    with col2:
+        st.metric('🔴 Checked Out Today', stats['checked_out_today'])
+    with col3:
+        pending = stats['checked_in_today'] - stats['checked_out_today']
+        st.metric('⏳ Pending Check-out', max(0, pending))
     
     st.markdown('---')
     
-    st.header('📈 Analytics Dashboard')
-    college_stats, status_counts, daily_trends = generate_analytics(df)
+    # # Enhanced Analytics Dashboard
+    # st.header('📈 Interactive Analytics Dashboard')
     
-    if os.path.exists(CHART_FILE):
-        st.image(CHART_FILE, caption='Comprehensive Attendance Analytics', use_container_width=True)
+    analytics_result = generate_enhanced_analytics(df)
+    if analytics_result:
+        fig, college_stats, status_counts, daily_trends = analytics_result
+        st.plotly_chart(
+            fig,
+            use_container_width=True,
+            config={
+                'displayModeBar': True,
+                'modeBarButtonsToAdd': ['downloadImage', 'zoom2d', 'pan2d', 'select2d', 'lasso2d', 'autoScale2d', 'resetScale2d'],
+                'toImageButtonOptions': {
+                    'format': 'png',
+                    'filename': f"Attendance_Analytics_{datetime.now(IST).strftime('%Y%m%d_%H%M')}",
+                    'height': 800,
+                    'width': 1200,
+                    'scale': 2
+                },
+                'displaylogo': False
+            }
+        )
     
+    # # Fallback static image
+    # if os.path.exists(CHART_FILE):
+    #     st.image(CHART_FILE, caption='Static Attendance Analytics', use_container_width=True)
+    
+    # Tabs for detailed views
     tab1, tab2, tab3, tab4, tab5 = st.tabs(['📋 All Records', '🏫 College Stats', '📊 Daily Trends', '💾 Export Data', '👤 Interns'])
     
     with tab1:
@@ -533,22 +708,52 @@ def admin_dashboard():
         for col in ['in_time', 'out_time']:
             display_df[col] = display_df[col].replace('', 'Not marked')
         
-        st.dataframe(display_df.sort_values(['date', 'in_time'], ascending=[False, False]), 
-                     use_container_width=True)
+        st.dataframe(
+            display_df.sort_values(by=['date', 'in_time'], ascending=[False, False]),
+            use_container_width=True,
+            column_config={
+                'username': 'Username',
+                'college_name': 'College',
+                'date': 'Date',
+                'in_time': 'Check-in Time',
+                'out_time': 'Check-out Time',
+                'total_hours': 'Hours',
+                'status': 'Status',
+                'device_id': 'Device ID'
+            }
+        )
     
     with tab2:
         st.subheader('College-wise Statistics')
-        if not college_stats.empty:
-            st.dataframe(college_stats, use_container_width=True)
+        if analytics_result and not college_stats.empty:
+            st.dataframe(
+                college_stats,
+                use_container_width=True,
+                column_config={
+                    'College Name': 'College',
+                    'Unique Interns': 'Interns',
+                    'Active Days': 'Days',
+                    'Total Hours': 'Hours'
+                }
+            )
     
     with tab3:
         st.subheader('Daily Trends')
-        if not daily_trends.empty:
-            st.dataframe(daily_trends, use_container_width=True)
+        if analytics_result and not daily_trends.empty:
+            st.dataframe(
+                daily_trends,
+                use_container_width=True,
+                column_config={
+                    'Date': 'Date',
+                    'Unique Interns': 'Interns',
+                    'Check-ins': 'Check-ins',
+                    'Total Hours': 'Hours'
+                }
+            )
     
     with tab4:
         st.subheader('Export Data')
-        col1, col2 = st.columns(2)
+        col1, col2, col3 = st.columns(3)
         
         with col1:
             if not df.empty:
@@ -557,23 +762,44 @@ def admin_dashboard():
                     label='📥 Export All Records',
                     data=csv,
                     file_name=f"Attendance_Records_{datetime.now(IST).strftime('%Y%m%d_%H%M')}.csv",
-                    mime='text/csv'
+                    mime='text/csv',
+                    use_container_width=True
                 )
         
         with col2:
-            if not college_stats.empty:
+            if analytics_result and not college_stats.empty:
                 csv = college_stats.to_csv(index=False)
                 st.download_button(
                     label='📊 Export College Stats',
                     data=csv,
-                    file_name=f"College_Statistics_{datetime.now(IST).strftime('%Y%m%d_%H%M')}.csv",
-                    mime='text/csv'
+                    file_name=f"College_Stats_{datetime.now(IST).strftime('%Y%m%d_%H%M')}.csv",
+                    mime='text/csv',
+                    use_container_width=True
+                )
+        
+        with col3:
+            if analytics_result and not daily_trends.empty:
+                csv = daily_trends.to_csv(index=False)
+                st.download_button(
+                    label='📈 Export Daily Trends',
+                    data=csv,
+                    file_name=f"Daily_Trends_{datetime.now(IST).strftime('%Y%m%d_%H%M')}.csv",
+                    mime='text/csv',
+                    use_container_width=True
                 )
     
     with tab5:
         st.subheader('Manage Interns')
         interns_df = load_interns()
-        st.dataframe(interns_df, use_container_width=True)
+        if not interns_df.empty:
+            st.dataframe(
+                interns_df,
+                use_container_width=True,
+                column_config={
+                    'username': 'Username',
+                    'college_name': 'College'
+                }
+            )
         
         col1, col2, col3 = st.columns(3)
         with col1:
@@ -674,9 +900,11 @@ def intern_interface():
     
     st.header('⚡ Quick Attendance')
     
-    username = st.text_input('👤 Code.Swecha.org Username', 
-                             value=st.session_state.username,
-                             placeholder='Enter your username')
+    username = st.text_input(
+        '👤 Code.Swecha.org Username',
+        value=st.session_state.username,
+        placeholder='Enter your username'
+    )
     if username != st.session_state.username:
         st.session_state.username = username
         logger.debug(f"Updated session username: {username}")
@@ -749,6 +977,7 @@ def main():
             st.text(f"Local Time: {time_info['local_time']}")
             st.text(f"IST Time: {time_info['ist_time']}")
             st.text(f"System TZ: {time_info['system_tz']}")
+            st.text(f"Device ID: {st.session_state.device_fingerprint}")
     
     st.sidebar.title('🏢 Summer of AI Tracker')
     
