@@ -248,10 +248,8 @@ def save_record(username, college_name, action):
                     document_id=existing_record['$id'],
                     data={
                         'in_time': current_time,
-                        'in_ip': '',
                         'status': 'Checked In',
                         'out_time': '',
-                        'out_ip': '',
                         'total_hours': 0.0
                     }
                 )
@@ -268,8 +266,6 @@ def save_record(username, college_name, action):
                         'in_time': current_time,
                         'out_time': '',
                         'total_hours': 0.0,
-                        'in_ip': '',
-                        'out_ip': '',
                         'status': 'Checked In'
                     }
                 )
@@ -304,7 +300,6 @@ def save_record(username, college_name, action):
                 document_id=existing_record['$id'],
                 data={
                     'out_time': current_time,
-                    'out_ip': '',
                     'total_hours': total_hours,
                     'status': 'Checked Out'
                 }
@@ -350,7 +345,6 @@ def calculate_summary_stats(df):
     
     logger.debug(f"Summary stats: {stats}")
     return stats
-
 # Generate analytics
 def generate_analytics(df):
     logger.debug("Generating analytics")
@@ -376,77 +370,104 @@ def generate_analytics(df):
     daily_trends.columns = ['Date', 'Unique Interns', 'Check-ins', 'Total Hours']
     daily_trends['Total Hours'] = daily_trends['Total Hours'].round(2)
     
-    plt.style.use('default')
-    fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(15, 12))
+    fig = make_subplots(
+        rows=2, cols=2,
+        specs=[[{"type": "bar"}, {"type": "pie"}],
+               [{"type": "scatter"}, {"type": "histogram"}]],
+        subplot_titles=("Unique Interns by College", "Status Distribution",
+                        "Daily Attendance Trends", "Distribution of Session Hours")
+    )
     
     if not college_stats.empty:
-        bars = ax1.bar(college_stats['College Name'], college_stats['Unique Interns'], 
-                       color='skyblue', edgecolor='navy', alpha=0.7)
-        ax1.set_xlabel('College Name')
-        ax1.set_ylabel('Unique Interns')
-        ax1.set_title('Unique Interns by College')
-        ax1.tick_params(axis='x', rotation=45)
-        for bar in bars:
-            height = bar.get_height()
-            ax1.text(bar.get_x() + bar.get_width()/2., height + 0.1,
-                     f'{int(height)}', ha='center', va='bottom')
+        bar_trace = go.Bar(
+            x=college_stats['College Name'],
+            y=college_stats['Unique Interns'],
+            marker_line_color='navy',
+            marker_line_width=1.5,
+            opacity=0.7,
+            text=college_stats['Unique Interns'],
+            textposition='auto',
+            hovertemplate='<b>%{x}</b><br>Interns: %{y}<br>Active Days: %{customdata[0]}<br>Total Hours: %{customdata[1]}',
+            customdata=college_stats[['Active Days', 'Total Hours']].values
+        )
+        fig.add_trace(bar_trace, row=1, col=1)
     
     if not status_counts.empty:
         colors = ['lightgreen' if 'In' in status else 'lightcoral' for status in status_counts['Status']]
-        ax2.pie(status_counts['Count'], labels=status_counts['Status'], 
-                autopct='%1.1f%%', startangle=90, colors=colors)
-        ax2.set_title('Status Distribution')
+        pie_trace = go.Pie(
+            labels=status_counts['Status'],
+            values=status_counts['Count'],
+            textinfo='percent+label',
+            marker_colors=colors,
+            hovertemplate='<b>%{label}</b><br>Count: %{value}<br>Percent: %{percent}',
+            pull=[0.05 if 'In' in status else 0 for status in status_counts['Status']]
+        )
+        fig.add_trace(pie_trace, row=1, col=2)
     
     if not daily_trends.empty:
-        ax3.plot(daily_trends['Date'], daily_trends['Unique Interns'], 
-                 marker='o', label='Unique Interns', linewidth=2, color='blue')
-        ax3.plot(daily_trends['Date'], daily_trends['Check-ins'], 
-                 marker='s', label='Check-ins', linewidth=2, color='green')
-        ax3.set_xlabel('Date')
-        ax3.set_ylabel('Count')
-        ax3.set_title('Daily Attendance Trends')
-        ax3.legend()
-        ax3.tick_params(axis='x', rotation=45)
+        line_interns = go.Scatter(
+            x=daily_trends['Date'],
+            y=daily_trends['Unique Interns'],
+            mode='lines+markers',
+            name='Unique Interns',
+            line=dict(color='blue', width=2),
+            marker=dict(size=8),
+            hovertemplate='<b>%{x}</b><br>Interns: %{y}<br>Total Hours: %{customdata}',
+            customdata=daily_trends['Total Hours']
+        )
+        line_checkins = go.Scatter(
+            x=daily_trends['Date'],
+            y=daily_trends['Check-ins'],
+            mode='lines+markers',
+            name='Check-ins',
+            line=dict(color='green', width=2),
+            marker=dict(size=8, symbol='square'),
+            hovertemplate='<b>%{x}</b><br>Check-ins: %{y}<br>Total Hours: %{customdata}',
+            customdata=daily_trends['Total Hours']
+        )
+        fig.add_trace(line_interns, row=2, col=1)
+        fig.add_trace(line_checkins, row=2, col=1)
     
     hours_data = pd.to_numeric(df['total_hours'], errors='coerce').dropna()
     if not hours_data.empty:
-        ax4.hist(hours_data, bins=max(10, len(hours_data)//5), 
-                 color='gold', alpha=0.7, edgecolor='orange')
-        ax4.set_xlabel('Hours Spent')
-        ax4.set_ylabel('Frequency')
-        ax4.set_title('Distribution of Session Hours')
-        ax4.axvline(hours_data.mean(), color='red', linestyle='--', 
-                    label=f'Mean: {hours_data.mean():.2f}h')
-        ax4.legend()
+        hist_trace = go.Histogram(
+            x=hours_data,
+            nbinsx=max(10, len(hours_data)//5),
+            marker_color='gold',
+            marker_line_color='orange',
+            marker_line_width=1,
+            opacity=0.7,
+            hovertemplate='Hours: %{x}<br>Count: %{y}'
+        )
+        mean_line = go.Scatter(
+            x=[hours_data.mean(), hours_data.mean()],
+            y=[0, hours_data.value_counts(bins=max(10, len(hours_data)//5)).max()],
+            mode='lines',
+            line=dict(color='red', dash='dash'),
+            name=f'Mean: {hours_data.mean():.2f}h',
+            hoverinfo='skip'
+        )
+        fig.add_trace(hist_trace, row=2, col=2)
+        fig.add_trace(mean_line, row=2, col=2)
     
-    plt.tight_layout()
-    plt.savefig(CHART_FILE, dpi=300, bbox_inches='tight')
-    plt.close()
-    logger.debug(f"Saved analytics chart to {CHART_FILE}")
+    fig.update_layout(
+        height=800,
+        width=1200,
+        showlegend=True,
+        template='plotly_white',
+        title_text="Attendance Analytics Dashboard",
+        title_x=0.5
+    )
+    fig.update_xaxes(tickangle=45, row=1, col=1)
+    fig.update_xaxes(tickangle=45, row=2, col=1)
+    
+    try:
+        fig.write_image(CHART_FILE, format="png", width=1200, height=800, scale=2)
+        logger.debug(f"Saved analytics chart to {CHART_FILE}")
+    except Exception as e:
+        logger.error(f"Failed to save chart: {str(e)}")
     
     return college_stats, status_counts, daily_trends
-
-# Admin login function
-def admin_login():
-    st.title('🔐 Admin Login')
-    st.markdown('---')
-    
-    with st.form('login_form'):
-        username = st.text_input('Username')
-        password = st.text_input('Password', type='password')
-        login_button = st.form_submit_button('Login')
-        
-        if login_button:
-            if username in ADMIN_CREDENTIALS and ADMIN_CREDENTIALS[username] == password:
-                st.session_state.authenticated = True
-                st.session_state.user_role = username
-                st.success(f'✅ Welcome, {username.title()}!')
-                logger.info(f"Admin {username} logged in")
-                st.rerun()
-            else:
-                st.error('❌ Invalid credentials.')
-                logger.warning(f"Failed login attempt for {username}")
-
 # Admin dashboard
 def admin_dashboard():
     st.title(f'📊 Admin Dashboard - {st.session_state.user_role.title()}')
