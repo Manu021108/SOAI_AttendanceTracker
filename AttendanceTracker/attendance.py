@@ -963,13 +963,17 @@ def intern_interface():
     
     if username.strip():
         df = load_records()
-        today = datetime.now(IST).strftime("%Y-%m-%d")
         if df.empty or 'username' not in df.columns:
-            st.info("📝 No attendance records found for today.")
-            logger.debug(f"No records for {username} today")
+            st.info("📝 No attendance records found.")
+            logger.debug(f"No records for {username}")
             return
         
-        user_today = df[(df['username'] == username.strip()) & (df['date'] == today)]
+        # Filter records for the current user
+        user_records = df[df['username'] == username.strip()]
+        
+        # Today's status
+        today = datetime.now(IST).strftime("%Y-%m-%d")
+        user_today = user_records[user_records['date'] == today]
         
         if not user_today.empty:
             record = user_today.iloc[0]
@@ -986,7 +990,69 @@ def intern_interface():
                 hours = record['total_hours'] if record['total_hours'] else 'Incomplete'
                 st.info(f"⏰ **Hours**: {hours}")
             logger.debug(f"Displayed today's status for {username}")
-
+        
+        # Attendance Summary
+        st.markdown('---')
+        st.header('📊 Your Attendance Summary')
+        if user_records.empty:
+            st.info("No attendance records found for you.")
+        else:
+            # Calculate user-specific summary stats
+            complete_records = user_records[(user_records['in_time'] != '') & (user_records['out_time'] != '')]
+            stats = {
+                'total_days': user_records['date'].nunique(),
+                'complete_sessions': len(complete_records),
+                'total_hours': round(pd.to_numeric(complete_records['total_hours'], errors='coerce').sum(), 2),
+                'avg_hours': round(pd.to_numeric(complete_records['total_hours'], errors='coerce').mean(), 2) if not complete_records.empty else 0.0
+            }
+            
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric('📅 Total Days Attended', stats['total_days'])
+            with col2:
+                st.metric('✅ Complete Sessions', stats['complete_sessions'])
+            with col3:
+                st.metric('⏰ Total Hours', f"{stats['total_hours']}h")
+            with col4:
+                st.metric('📈 Avg Hours per Session', f"{stats['avg_hours']}h")
+            logger.debug(f"Displayed attendance summary for {username}: {stats}")
+        
+        # Past Attendance Records
+        st.markdown('---')
+        st.header('📋 Your Past Attendance Records')
+        if user_records.empty:
+            st.info("No past attendance records found.")
+        else:
+            display_df = user_records.copy()
+            for col in ['in_time', 'out_time']:
+                display_df[col] = display_df[col].replace('', 'Not marked')
+            
+            st.dataframe(
+                display_df.sort_values(by='date', ascending=False),
+                use_container_width=True,
+                column_config={
+                    'username': 'Username',
+                    'college_name': 'College',
+                    'date': 'Date',
+                    'in_time': 'Check-in Time',
+                    'out_time': 'Check-out Time',
+                    'total_hours': 'Hours',
+                    'status': 'Status',
+                    'device_id': 'Device ID'
+                }
+            )
+            logger.debug(f"Displayed {len(user_records)} past records for {username}")
+            
+            # Export option
+            csv = display_df.to_csv(index=False)
+            st.download_button(
+                label='📥 Export Your Records',
+                data=csv,
+                file_name=f"{username}_Attendance_{datetime.now(IST).strftime('%Y%m%d_%H%M')}.csv",
+                mime='text/csv',
+                use_container_width=True
+            )
+     
 # Main application
 def main():
     if DEBUG_MODE:
