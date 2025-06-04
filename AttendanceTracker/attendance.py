@@ -290,15 +290,16 @@ def load_records():
             'username', 'college_name', 'date', 'in_time', 'out_time',
             'total_hours', 'status', 'device_id'
         ])
+# Load interns from Appwrite
 def save_record(username, college_name, action):
     logger.debug(f"Saving record: username={username}, action={action}, device_id={st.session_state.device_fingerprint}")
-
+    
     today = datetime.now(IST).strftime("%Y-%m-%d")
     current_time = datetime.now(IST).strftime("%H:%M:%S")
     device_id = st.session_state.device_fingerprint
-
+    
     try:
-        # Check if this device has already been used by another user today
+        # Step 1: Check if the device has already been used today
         device_check = databases.list_documents(
             database_id=APPWRITE_DATABASE_ID,
             collection_id=APPWRITE_ATTENDANCE_COLLECTION_ID,
@@ -308,12 +309,13 @@ def save_record(username, college_name, action):
             ]
         )
         for record in device_check['documents']:
+            # If the device was already used by a **different user**
             if record['username'] != username:
-                st.warning(f"⚠️ This device has already been used to mark attendance for {record['username']} on {today}.")
-                logger.warning(f"Device {device_id} already used by {record['username']}")
+                st.warning(f"⚠️ This device has already been used by '{record['username']}' on {today}. Cannot mark attendance for multiple users.")
+                logger.warning(f"Blocked: device {device_id} reused by another user {username}. Already used by {record['username']}.")
                 return False
 
-        # Get user attendance record for today
+        # Step 2: Check if this user already marked attendance
         username_check = databases.list_documents(
             database_id=APPWRITE_DATABASE_ID,
             collection_id=APPWRITE_ATTENDANCE_COLLECTION_ID,
@@ -324,14 +326,13 @@ def save_record(username, college_name, action):
         )
         existing_record = username_check['documents'][0] if username_check['documents'] else None
 
-        # Handle IN
         if action == "In":
             if existing_record and existing_record.get('in_time'):
-                st.warning(f"⚠️ {username} has already marked IN on {today}.")
+                st.warning(f"⚠️ {username} has already marked IN today.")
                 return False
-
+            
             if existing_record:
-                # Update IN
+                # Update IN time
                 databases.update_document(
                     database_id=APPWRITE_DATABASE_ID,
                     collection_id=APPWRITE_ATTENDANCE_COLLECTION_ID,
@@ -339,18 +340,16 @@ def save_record(username, college_name, action):
                     data={
                         'in_time': current_time,
                         'status': 'Checked In',
-                        'out_time': '',
-                        'total_hours': 0.0,
-                        'device_id': device_id
+                        'device_id': device_id,
+                        'total_hours': 0.0
                     }
                 )
-                st.success(f"✅ Marked IN for {username} at {current_time}")
             else:
-                # New IN
+                # Create new IN record
                 databases.create_document(
                     database_id=APPWRITE_DATABASE_ID,
                     collection_id=APPWRITE_ATTENDANCE_COLLECTION_ID,
-                    document_id='unique()',
+                    document_id="unique()",
                     data={
                         'username': username,
                         'college_name': college_name,
@@ -362,53 +361,38 @@ def save_record(username, college_name, action):
                         'device_id': device_id
                     }
                 )
-                st.success(f"✅ Marked IN for {username} at {current_time}")
-            return True
+            # st.success(f"✅ Marked IN for {username} at {current_time}")
 
-        # Handle OUT
         elif action == "Out":
-            if not existing_record:
-                st.error(f"❌ {username} has not marked IN today.")
+            if not existing_record or not existing_record.get('in_time'):
+                st.warning(f"❌ No IN record found for {username} on {today}. Please mark IN first.")
                 return False
-
-            if not existing_record.get('in_time'):
-                st.error(f"❌ IN time not found for {username}.")
-                return False
-
             if existing_record.get('out_time'):
-                st.warning(f"⚠️ {username} has already marked OUT on {today}.")
+                st.warning(f"⚠️ {username} has already marked OUT today.")
                 return False
 
-            try:
-                in_time_dt = datetime.strptime(existing_record['in_time'], "%H:%M:%S")
-                out_time_dt = datetime.strptime(current_time, "%H:%M:%S")
-                total_hours = round((out_time_dt - in_time_dt).total_seconds() / 3600, 2)
-            except Exception as e:
-                logger.warning(f"Time calculation error: {str(e)}")
-                total_hours = 0.0
+            in_time = datetime.strptime(existing_record['in_time'], "%H:%M:%S")
+            out_time = datetime.strptime(current_time, "%H:%M:%S")
+            total_hours = round((out_time - in_time).total_seconds() / 3600.0, 2)
 
-            # Update OUT
             databases.update_document(
                 database_id=APPWRITE_DATABASE_ID,
                 collection_id=APPWRITE_ATTENDANCE_COLLECTION_ID,
                 document_id=existing_record['$id'],
                 data={
                     'out_time': current_time,
-                    'total_hours': total_hours,
                     'status': 'Checked Out',
+                    'total_hours': total_hours,
                     'device_id': device_id
                 }
             )
             st.success(f"✅ Marked OUT for {username} at {current_time}")
-            return True
-
-        else:
-            st.error("Invalid action.")
-            return False
-
+        
+        return True
+    
     except Exception as e:
-        st.error(f"❌ Error saving record: {str(e)}")
-        logger.error(f"Exception for {username}: {str(e)}", exc_info=True)
+        st.error(f"Error saving record: {str(e)}")
+        logger.exception(f"Error during attendance save: {str(e)}")
         return False
 
 # Calculate summary statistics
