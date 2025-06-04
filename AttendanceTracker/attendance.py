@@ -276,8 +276,6 @@ def load_records():
             'username', 'college_name', 'date', 'in_time', 'out_time',
             'total_hours', 'status', 'device_id'
         ])
-
-# Save attendance record to Appwrite
 def save_record(username, college_name, action):
     logger.debug(f"Saving record: username={username}, action={action}, device_id={st.session_state.device_fingerprint}")
     
@@ -306,6 +304,9 @@ def save_record(username, college_name, action):
                 st.warning(f"⚠️ {username} has already marked OUT on {today}.")
                 logger.warning(f"Duplicate OUT blocked for username {username}")
                 return False
+            # Update device_id if different (allow device change for same user)
+            if existing_record.get('device_id') != device_id:
+                logger.debug(f"Updating device_id for {username} from {existing_record.get('device_id')} to {device_id}")
         
         # Step 2: Check if device_id is already used by another username today
         device_check = databases.list_documents(
@@ -318,14 +319,19 @@ def save_record(username, college_name, action):
         )
         for record in device_check['documents']:
             if record['username'] != username:
-                st.warning(f"⚠️ This device has already been used to mark attendance for {record['username']} on {today}. Duplicate devices cannot mark attendance.")
+                logger.warning(f"Device {device_id} already used by {record['username']} on {today}")
+                # Allow if the record is incomplete (no in_time or out_time)
+                if not record.get('in_time') and not record.get('out_time'):
+                    logger.debug(f"Allowing device reuse: record for {record['username']} is incomplete")
+                    continue
+                st.warning(f"⚠️ This device has already been used to mark attendance for {record['username']} on {today}. Please use a different device.")
                 logger.warning(f"Duplicate device {device_id} blocked for username {username}, already used by {record['username']}")
                 return False
         
         # Step 3: Mark attendance (create or update record)
         if action == "In":
             if username_check['documents']:
-                # Update existing record if no in_time (unlikely case)
+                # Update existing record
                 existing_record = username_check['documents'][0]
                 databases.update_document(
                     database_id=APPWRITE_DATABASE_ID,
