@@ -9,3 +9,4 @@ streamlit
 pandas
 plotly
 appwrite
+streamlit-browser-storage

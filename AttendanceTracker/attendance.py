@@ -17,6 +17,8 @@ import logging
 import time
 import hashlib
 import uuid
+from streamlit_browser_storage import LocalStorage
+
 
 # Setup logging
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -78,13 +80,17 @@ if 'username' not in st.session_state:
     st.session_state.username = ""
 # Generate a better device fingerprint
 
-if 'device_fingerprint' not in st.session_state:
-    if 'device_id' in st.cookies:
-        st.session_state.device_fingerprint = st.cookies['device_id']
-    else:
-        new_id = str(uuid.uuid4())
-        st.session_state.device_fingerprint = new_id
-        st.cookies['device_id'] = new_id
+
+storage = LocalStorage(key="device_fingerprint")
+
+# Use stored value or create new
+if not storage.get():
+    new_id = str(uuid.uuid4())
+    storage.set(new_id)
+    st.session_state.device_fingerprint = new_id
+else:
+    st.session_state.device_fingerprint = storage.get()
+
 # Timezone for IST
 IST = pytz.timezone('Asia/Kolkata')
 
