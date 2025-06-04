@@ -943,7 +943,7 @@ def intern_interface():
                     logger.debug(f"Mark IN time info: {time_info}")
                     if save_record(username.strip(), college_name, 'In'):
                         st.success(f"✅ Welcome {username}! Marked IN at {datetime.now(IST).strftime('%H:%M:%S')}")
-                        logger.info(f"Marked IN: {username}")
+                        # logger.info(f"Marked IN: {username}")
                         st.balloons()
             else:
                 st.error('❌ Please enter a username.')
