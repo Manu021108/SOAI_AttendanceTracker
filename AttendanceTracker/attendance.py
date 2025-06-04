@@ -16,6 +16,7 @@ import pytz
 import logging
 import time
 import hashlib
+import uuid
 
 # Setup logging
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -76,17 +77,14 @@ if 'user_role' not in st.session_state:
 if 'username' not in st.session_state:
     st.session_state.username = ""
 # Generate a better device fingerprint
+
 if 'device_fingerprint' not in st.session_state:
-    try:
-        # Extract user-agent from request headers (only available in Streamlit Community Cloud / behind web server)
-        user_agent = st._runtime.scriptrunner.get_script_run_ctx().request.headers.get("User-Agent", "unknown")
-    except Exception:
-        user_agent = "unknown"
-
-    raw_device_info = f"{user_agent}_{platform.platform()}"
-    st.session_state.device_fingerprint = hashlib.sha256(raw_device_info.encode()).hexdigest()[:16]
-
-
+    if 'device_id' in st.cookies:
+        st.session_state.device_fingerprint = st.cookies['device_id']
+    else:
+        new_id = str(uuid.uuid4())
+        st.session_state.device_fingerprint = new_id
+        st.cookies['device_id'] = new_id
 # Timezone for IST
 IST = pytz.timezone('Asia/Kolkata')
 
