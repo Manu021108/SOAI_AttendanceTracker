@@ -80,16 +80,20 @@ if 'username' not in st.session_state:
     st.session_state.username = ""
 # Generate a better device fingerprint
 
+# Initialize storage object
+storage = LocalStorage(key="attendance_storage")
 
-storage = LocalStorage(key="device_fingerprint")
+# Try to get device fingerprint from localStorage
+device_id = storage.get("device_fingerprint")
 
-# Use stored value or create new
-if not storage.get():
-    new_id = str(uuid.uuid4())
-    storage.set(new_id)
-    st.session_state.device_fingerprint = new_id
-else:
-    st.session_state.device_fingerprint = storage.get()
+# If not found, generate and store a new one
+if not device_id:
+    device_id = str(uuid.uuid4())
+    storage.set("device_fingerprint", device_id)
+
+# Assign to session state
+st.session_state.device_fingerprint = device_id
+
 
 # Timezone for IST
 IST = pytz.timezone('Asia/Kolkata')
