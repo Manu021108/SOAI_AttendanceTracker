@@ -75,11 +75,17 @@ if 'user_role' not in st.session_state:
     st.session_state.user_role = None
 if 'username' not in st.session_state:
     st.session_state.username = ""
+# Generate a better device fingerprint
 if 'device_fingerprint' not in st.session_state:
-    # Create a device fingerprint based on user agent and other factors
-    st.session_state.device_fingerprint = hashlib.md5(
-        f"{st.session_state.get('user_agent', 'unknown')}_{platform.platform()}".encode()
-    ).hexdigest()[:12]
+    try:
+        # Extract user-agent from request headers (only available in Streamlit Community Cloud / behind web server)
+        user_agent = st._runtime.scriptrunner.get_script_run_ctx().request.headers.get("User-Agent", "unknown")
+    except Exception:
+        user_agent = "unknown"
+
+    raw_device_info = f"{user_agent}_{platform.platform()}"
+    st.session_state.device_fingerprint = hashlib.sha256(raw_device_info.encode()).hexdigest()[:16]
+
 
 # Timezone for IST
 IST = pytz.timezone('Asia/Kolkata')
@@ -278,14 +284,13 @@ def load_records():
         ])
 def save_record(username, college_name, action):
     logger.debug(f"Saving record: username={username}, action={action}, device_id={st.session_state.device_fingerprint}")
-    
+
     today = datetime.now(IST).strftime("%Y-%m-%d")
     current_time = datetime.now(IST).strftime("%H:%M:%S")
     device_id = st.session_state.device_fingerprint
-    logger.debug(f"Recording time: {today} {current_time} IST, Device: {device_id}")
-    
+
     try:
-        # Step 1: Check if username has already marked attendance today
+        # Step 1: Fetch user attendance record for today
         username_check = databases.list_documents(
             database_id=APPWRITE_DATABASE_ID,
             collection_id=APPWRITE_ATTENDANCE_COLLECTION_ID,
@@ -294,8 +299,10 @@ def save_record(username, college_name, action):
                 Query.equal('date', today)
             ]
         )
-        if username_check['documents']:
-            existing_record = username_check['documents'][0]
+
+        existing_record = username_check['documents'][0] if username_check['documents'] else None
+
+        if existing_record:
             if action == "In" and existing_record.get('in_time'):
                 st.warning(f"⚠️ {username} has already marked IN on {today}.")
                 logger.warning(f"Duplicate IN blocked for username {username}")
@@ -304,11 +311,8 @@ def save_record(username, college_name, action):
                 st.warning(f"⚠️ {username} has already marked OUT on {today}.")
                 logger.warning(f"Duplicate OUT blocked for username {username}")
                 return False
-            # Update device_id if different (allow device change for same user)
-            if existing_record.get('device_id') != device_id:
-                logger.debug(f"Updating device_id for {username} from {existing_record.get('device_id')} to {device_id}")
-        
-        # Step 2: Check if device_id is already used by another username today
+
+        # Step 2: Ensure device_id hasn't already been used by a different user for a completed record today
         device_check = databases.list_documents(
             database_id=APPWRITE_DATABASE_ID,
             collection_id=APPWRITE_ATTENDANCE_COLLECTION_ID,
@@ -317,29 +321,23 @@ def save_record(username, college_name, action):
                 Query.equal('date', today)
             ]
         )
+
         for record in device_check['documents']:
             if record['username'] != username:
-                logger.warning(f"Device {device_id} already used by {record['username']} on {today}")
-                # Allow if the record is incomplete (no in_time or out_time)
-                if not record.get('in_time') and not record.get('out_time'):
-                    logger.debug(f"Allowing device reuse: record for {record['username']} is incomplete")
-                    continue
-                st.warning(f"⚠️ This device has already been used to mark attendance for {record['username']} on {today}. Please use a different device.")
-                logger.warning(f"Duplicate device {device_id} blocked for username {username}, already used by {record['username']}")
-                return False
-        
-        # Step 3: Mark attendance (create or update record)
+                if record.get('in_time') and record.get('out_time'):
+                    st.warning(f"⚠️ This device has already been used to fully mark attendance for {record['username']} on {today}. Please use a different device.")
+                    logger.warning(f"Device {device_id} already used by {record['username']} (complete record)")
+                    return False
+
+        # Step 3: Handle "In" action
         if action == "In":
-            if username_check['documents']:
+            if existing_record:
                 # Update existing record
-                existing_record = username_check['documents'][0]
                 databases.update_document(
                     database_id=APPWRITE_DATABASE_ID,
                     collection_id=APPWRITE_ATTENDANCE_COLLECTION_ID,
                     document_id=existing_record['$id'],
                     data={
-                        'username': username,
-                        'college_name': college_name,
                         'in_time': current_time,
                         'status': 'Checked In',
                         'out_time': '',
@@ -348,7 +346,7 @@ def save_record(username, college_name, action):
                     }
                 )
                 st.success(f"✅ Marked IN for {username} at {current_time}")
-                logger.debug(f"Updated IN record for username {username}, device {device_id}")
+                logger.debug(f"Updated IN record for username {username}")
             else:
                 # Create new record
                 databases.create_document(
@@ -367,34 +365,30 @@ def save_record(username, college_name, action):
                     }
                 )
                 st.success(f"✅ Marked IN for {username} at {current_time}")
-                logger.debug(f"Created IN record for username {username}, device {device_id}")
-        
+                logger.debug(f"Created new IN record for username {username}")
+
+        # Step 4: Handle "Out" action
         elif action == "Out":
-            if not username_check['documents']:
-                st.error(f"❌ {username} has not marked IN on {today}. Please mark IN first.")
-                logger.warning(f"OUT blocked: no IN record for username {username}")
+            if not existing_record or not existing_record.get('in_time'):
+                st.error(f"❌ {username} must mark IN before OUT.")
+                logger.warning(f"OUT blocked: no IN time")
                 return False
-            
-            existing_record = username_check['documents'][0]
-            if not existing_record.get('in_time'):
-                st.error(f"❌ No IN time recorded for {username} on {today}.")
-                logger.warning(f"OUT blocked: no IN time for username {username}")
-                return False
+
             if existing_record.get('out_time'):
                 st.warning(f"⚠️ {username} has already marked OUT on {today}.")
                 logger.warning(f"Duplicate OUT blocked for username {username}")
                 return False
-            
+
             try:
                 in_time_dt = datetime.strptime(existing_record['in_time'], "%H:%M:%S")
                 out_time_dt = datetime.strptime(current_time, "%H:%M:%S")
                 total_seconds = (out_time_dt - in_time_dt).total_seconds()
-                total_hours = float(round(total_seconds / 3600, 2))
+                total_hours = round(total_seconds / 3600, 2)
             except Exception as e:
-                st.warning(f"Error calculating hours: {str(e)}")
-                logger.warning(f"Error calculating hours for username {username}: {str(e)}")
+                st.warning(f"Error calculating total hours: {str(e)}")
+                logger.error(f"Time parsing error: {str(e)}")
                 total_hours = 0.0
-            
+
             databases.update_document(
                 database_id=APPWRITE_DATABASE_ID,
                 collection_id=APPWRITE_ATTENDANCE_COLLECTION_ID,
@@ -407,13 +401,15 @@ def save_record(username, college_name, action):
                 }
             )
             st.success(f"✅ Marked OUT for {username} at {current_time}")
-            logger.debug(f"Updated OUT record for username {username}, device {device_id}")
-        
+            logger.debug(f"Updated OUT record for username {username}")
+
         return True
+
     except Exception as e:
-        st.error(f"Error saving record: {str(e)}")
-        logger.error(f"Error saving record for username {username}, device {device_id}: {str(e)}", exc_info=True)
+        st.error(f"❌ Error saving record: {str(e)}")
+        logger.error(f"Save failed for {username}: {str(e)}", exc_info=True)
         return False
+
 # Calculate summary statistics
 def calculate_summary_stats(df):
     logger.debug("Calculating summary stats")
